@@ -58,3 +58,42 @@ pub fn get_local_lan_ips() -> Vec<String> {
 
     ips
 }
+
+pub fn get_broadcast_addresses() -> Vec<String> {
+    let mut addrs = Vec::new();
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for iface in interfaces {
+            if iface.is_loopback() {
+                continue;
+            }
+            let name_lower = iface.name.to_lowercase();
+            if name_lower.contains("radmin")
+                || name_lower.contains("vpn")
+                || name_lower.contains("tap")
+                || name_lower.contains("tun")
+                || name_lower.contains("virtual")
+                || name_lower.contains("vethernet")
+                || name_lower.contains("tailscale")
+                || name_lower.contains("zerotier")
+            {
+                continue;
+            }
+            if let if_addrs::IfAddr::V4(ref ifv4) = iface.addr {
+                let octets = ifv4.ip.octets();
+                if octets[0] == 127 || (octets[0] == 169 && octets[1] == 254) || octets[0] == 26 {
+                    continue;
+                }
+                if let Some(bcast) = ifv4.broadcast {
+                    let bcast_str = bcast.to_string();
+                    if !addrs.contains(&bcast_str) {
+                        addrs.push(bcast_str);
+                    }
+                }
+            }
+        }
+    }
+    if !addrs.contains(&"255.255.255.255".to_string()) {
+        addrs.push("255.255.255.255".to_string());
+    }
+    addrs
+}

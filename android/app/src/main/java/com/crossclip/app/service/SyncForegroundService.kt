@@ -142,20 +142,31 @@ class SyncForegroundService : Service() {
         startHeartbeat()
 
         // 启动本地微型 HTTP 服务端 (监听端口 18237)
-        localHttpServer = LocalHttpServer(18237) { encrypted, hash, _ ->
-            if (pinCode.isNotEmpty()) {
-                try {
-                    val decrypted = CryptoUtil.decrypt(encrypted, pinCode)
-                    if (CryptoUtil.computeHash(decrypted) == hash) {
-                        onNetworkTextReceived(decrypted)
-                    } else {
-                        DebugLogger.log("LOCAL_HTTP", "解密文本 Hash 不匹配: 计算=${CryptoUtil.computeHash(decrypted)} vs 接收=$hash")
+        localHttpServer = LocalHttpServer(
+            port = 18237,
+            onWakeupReceived = { remoteIp, reqPcIp, reqPort, devId, devName ->
+                acquireTransientWakeLock(3000L)
+                val targetIp = reqPcIp.ifEmpty { remoteIp }
+                val targetId = if (devId.isNotEmpty()) devId else "pc_${targetIp.replace('.', '_')}"
+                val targetName = if (devName.isNotEmpty()) devName else "Windows 电脑"
+                DebugLogger.log("SVC_WAKEUP", "收到电脑端主动唤醒通知: ip=$targetIp, port=$reqPort, id=$targetId, name=$targetName")
+                onDeviceDiscovered(targetId, targetName, targetIp, reqPort)
+            },
+            onSyncReceived = { encrypted, hash, _ ->
+                if (pinCode.isNotEmpty()) {
+                    try {
+                        val decrypted = CryptoUtil.decrypt(encrypted, pinCode)
+                        if (CryptoUtil.computeHash(decrypted) == hash) {
+                            onNetworkTextReceived(decrypted)
+                        } else {
+                            DebugLogger.log("LOCAL_HTTP", "解密文本 Hash 不匹配: 计算=${CryptoUtil.computeHash(decrypted)} vs 接收=$hash")
+                        }
+                    } catch (e: Exception) {
+                        DebugLogger.log("LOCAL_HTTP", "解密对等推送剪贴板异常: ${e.message}", e)
                     }
-                } catch (e: Exception) {
-                    DebugLogger.log("LOCAL_HTTP", "解密对等推送剪贴板异常: ${e.message}", e)
                 }
             }
-        }
+        )
         localHttpServer?.start()
 
         initNetwork()
@@ -245,6 +256,13 @@ class SyncForegroundService : Service() {
                             onLocalClipboardChanged()
                             if (currentPcIp.isNotEmpty() && pinCode.isNotEmpty()) {
                                 HttpUploader.sendHeartbeat(currentPcIp, currentHttpPort, pinCode, deviceId, deviceName, 18237)
+                            }
+                            if (connectionState != 1) {
+                                lanDiscovery.requestImmediateScan()
+                            }
+                        } else if (action == ConnectivityManager.CONNECTIVITY_ACTION) {
+                            if (connectionState != 1) {
+                                lanDiscovery.requestImmediateScan()
                             }
                         }
                     }
@@ -490,7 +508,8 @@ class SyncForegroundService : Service() {
         val devPin = sp.getString("pin_code_$finalDevId", "") ?: ""
         val candidatePin = if (devPin.isNotEmpty()) devPin else pinCode
 
-        if ((currentTargetDeviceId.isEmpty() || currentTargetDeviceId == finalDevId) && candidatePin.isNotEmpty()) {
+        val isTargetCandidate = (currentTargetDeviceId.isEmpty() || currentTargetDeviceId == finalDevId || lastSavedPcIp == ip)
+        if (isTargetCandidate && candidatePin.isNotEmpty()) {
             if (connectionState == 0 || (connectionState == -1 && ip != currentPcIp)) {
                 shouldTriggerConnect = true
             }

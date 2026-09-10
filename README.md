@@ -11,7 +11,9 @@ CrossClip 是一套**纯局域网、点对点**的剪贴板双向同步工具：
 - **端到端加密**：6 位动态 PIN 码经 SHA-256 派生 256 位密钥，AES-256-GCM 认证加密 + 随机 Nonce，防止局域网窃听与重放；
 - **后台静默读写**：Android 端接入 Shizuku 系统特权 API，直接操作系统剪贴板 Binder 接口，实现无弹窗、无焦点切换的后台同步，兼容 Android 10+ 的后台剪贴板限制；未授权 Shizuku 时自动降级为透明 Activity 方案；
 - **出站长连接**：配对成功后由手机主动向电脑发起 SSE 出站长连接，规避国产定制系统息屏待机对入站 TCP 握手的拦截与节流；
-- **多电脑管理（v1.1.0）**：自动按 `device_id` 记忆已配对电脑并为每台电脑独立保存 PIN 码；支持局域网内多台电脑在线列表、手动切换目标、心跳感知与离线自动重连；
+- **多电脑管理**：自动按 `device_id` 识别并记忆已配对电脑，每台电脑独立保存 PIN 码；支持在线电脑列表、手动切换目标、心跳感知与离线自动重连；
+- **主动唤醒与电脑重启自愈**：电脑端持久化手机历史 IP，开机后向手机单播 `/wakeup` 唤醒并按物理网卡发送子网定向广播；手机端零功耗被动守候，被唤醒后立即校验并重建 SSE 连接，解决手机深度休眠与电脑重启后的失联问题；
+- **低功耗调度**：未连接时 25 秒、已连接时 60 秒的守候间隔；亮屏 / 解锁 / 网络切换等系统事件触发的单次定向探活；扫描任务带世代标记与互斥保护，避免线程池积压与饥饿；
 - **可靠自发现**：UDP 广播 + mDNS/NSD 双通道发现，辅以 HTTP `/ping` 探活过滤系统幽灵缓存，支持多网卡/多 IP 候选及手动输入电脑 IP；
 - **防回环**：双端维护近期内容哈希环形队列，过滤自身写入引发的反射同步；
 - **明确边界**：仅同步纯文本，不支持图片、音视频与文件传输。
@@ -26,24 +28,24 @@ CrossClip/
 │   ├── Cargo.toml
 │   └── src/
 │       ├── main.rs            # 入口、Win32 托盘、单实例互斥、关机广播放行
-│       ├── server.rs          # HTTP / SSE 局域网服务、鉴权与 Peer 管理
+│       ├── server.rs          # HTTP / SSE 服务、鉴权、Peer 管理与手机唤醒守护
 │       ├── clipboard.rs       # 原生剪贴板监听与内容注入
 │       ├── crypto.rs          # AES-256-GCM 加解密与 SHA-256
-│       ├── config.rs          # 本地配置与动态 6 位 PIN 生成
-│       ├── ip_util.rs         # 局域网 IP 提取（过滤虚拟网卡）
-│       ├── udp_discovery.rs   # UDP 自发现广播应答
+│       ├── config.rs          # 本地配置、动态 6 位 PIN 与手机 IP 持久化
+│       ├── ip_util.rs         # 局域网 IP 提取与物理网卡定向广播地址
+│       ├── udp_discovery.rs   # UDP 自发现广播/应答
 │       └── mdns.rs            # mDNS 服务发布
 ├── android/                   # Android 手机端（Kotlin 原生工程）
 │   └── app/src/main/
 │       ├── AndroidManifest.xml
 │       ├── java/com/crossclip/app/
-│       │   ├── service/SyncForegroundService.kt     # 前台守护、配对/重连与 SSE 调度
+│       │   ├── service/SyncForegroundService.kt     # 前台守护、配对/重连、SSE 与低功耗调度
 │       │   ├── shizuku/ShizukuClipboardManager.kt   # Shizuku Binder 剪贴板静默读写
 │       │   ├── shizuku/ShizukuPrivilegeHelper.kt    # Shizuku 权限辅助
-│       │   ├── network/LocalHttpServer.kt           # 手机端本地接收服务（18237）
+│       │   ├── network/LocalHttpServer.kt           # 手机端本地服务（18237：/wakeup、/sync、/ping）
 │       │   ├── network/HttpUploader.kt              # 向电脑端提交密文/心跳
 │       │   ├── network/SseClient.kt                 # 出站 SSE 长连接客户端
-│       │   ├── network/LanDiscovery.kt              # UDP 发现、多 IP 候选与网段探测
+│       │   ├── network/LanDiscovery.kt              # UDP 发现、多 IP 候选与低功耗探测调度
 │       │   ├── network/NsdHelper.kt                 # mDNS/NSD 发现（HTTP 探活过滤）
 │       │   ├── crypto/CryptoUtil.kt                 # AES-256-GCM / SHA-256
 │       │   ├── ui/MainActivity.kt                   # 主界面、多电脑切换与厂商保活指引
@@ -69,7 +71,7 @@ cargo build --release
 - 左键点击托盘图标：复制当前 6 位配对 PIN 码；
 - 右键菜单：查看本机 IP、重新生成 PIN、配置开机自启、退出。
 
-首次运行会在程序所在目录生成 `config.json`（设备 ID、随机 PIN、端口与偏好），请勿提交或外泄该文件。
+首次运行会在程序所在目录生成 `config.json`（设备 ID、随机 PIN、端口、历史手机 IP 等），请勿提交或外泄该文件。
 
 ### Android 手机端（Kotlin）
 
@@ -95,10 +97,11 @@ cd android
 
 | 项目 | 说明 |
 | :--- | :--- |
-| UDP `18234` | Windows 端自发现广播/应答（OFFER 携带 `device_id`、候选 IP 列表） |
+| UDP `18234` | 自发现广播/应答（OFFER 携带 `device_id` 与候选 IP 列表） |
 | HTTP/SSE `18236` | Windows 端服务：`/ping`、`/auth`、`/sync`、SSE `/events` |
-| HTTP `18237` | 手机端本地接收端口（电脑对等推送） |
+| HTTP `18237` | 手机端本地服务：`/wakeup`（唤醒）、`/sync`（电脑推送）、`/ping` |
 | mDNS | 服务类型 `_crossclip._tcp.local.`，TXT 携带 `device_id` |
+| 唤醒机制 | 电脑端对手机历史 IP 单播 `POST /wakeup`（开机 15 秒内每 3 秒，常态每 60 秒） |
 | 密钥派生 | `AES_256_KEY = SHA-256(PIN)` |
 | 加密 | AES-256-GCM，12 字节随机 Nonce，`base64(nonce ‖ ciphertext ‖ tag)` |
 | 防回环 | 双端维护近期内容哈希环形队列，过滤自反射同步 |

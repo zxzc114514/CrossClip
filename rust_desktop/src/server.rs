@@ -146,6 +146,9 @@ impl Broadcaster {
     }
 
     pub fn register_peer(&self, ip: String, port: u16, device_id: String, device_name: String) {
+        if !ip.starts_with("127.") {
+            crate::config::update_persisted_phone_ip(&ip);
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -247,6 +250,42 @@ fn send_raw_http_post(ip: &str, port: u16, path: &str, json_body: &str) -> bool 
     false
 }
 
+fn start_phone_wake_daemon(http_port: u16, device_id: String, device_name: String) {
+    std::thread::spawn(move || {
+        // 开机初始密集唤醒阶段：前 15 秒每 3 秒单播一次，迅速叫醒手机
+        for _ in 0..5 {
+            send_wakeup_to_saved_phone(http_port, &device_id, &device_name);
+            std::thread::sleep(Duration::from_secs(3));
+        }
+
+        // 常规运行阶段：每隔 60 秒尝试单播唤醒一次
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+            send_wakeup_to_saved_phone(http_port, &device_id, &device_name);
+        }
+    });
+}
+
+fn send_wakeup_to_saved_phone(http_port: u16, device_id: &str, device_name: &str) {
+    let cfg = crate::config::load_or_init_config();
+    if let Some(ref phone_ip) = cfg.last_phone_ip {
+        if !phone_ip.is_empty() && !phone_ip.starts_with("127.") {
+            let lan_ips = crate::ip_util::get_local_lan_ips();
+            let main_ip = lan_ips.first().cloned().unwrap_or_else(|| "127.0.0.1".to_string());
+            let payload = serde_json::json!({
+                "type": "WAKEUP",
+                "pc_ip": main_ip,
+                "pc_port": http_port,
+                "device_id": device_id,
+                "device_name": device_name
+            })
+            .to_string();
+
+            let _ = send_raw_http_post(phone_ip, 18237, "/wakeup", &payload);
+        }
+    }
+}
+
 pub fn start_http_server(
     port: u16,
     pin_code: Arc<RwLock<String>>,
@@ -254,6 +293,8 @@ pub fn start_http_server(
     broadcaster: Broadcaster,
     on_text_received: Arc<dyn Fn(String, String) + Send + Sync + 'static>,
 ) {
+    start_phone_wake_daemon(port, broadcaster.device_id().to_string(), device_name.clone());
+
     std::thread::spawn(move || {
         let addr = format!("0.0.0.0:{}", port);
         let server = match Server::http(&addr) {
@@ -386,6 +427,7 @@ fn handle_client_request(
                 status: "error".to_string(),
                 auth: Some(false),
                 device_name: None,
+                device_id: None,
                 message: Some("pin_mismatch".to_string()),
             })
             .unwrap();
@@ -509,6 +551,7 @@ fn handle_client_request(
                     status: "error".to_string(),
                     auth: Some(false),
                     device_name: None,
+                    device_id: None,
                     message: Some("pin_mismatch".to_string()),
                 })
                 .unwrap();
