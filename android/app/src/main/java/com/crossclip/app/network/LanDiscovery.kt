@@ -26,9 +26,6 @@ class LanDiscovery(
     @Volatile
     var isConnected = false
 
-    private val isSubnetScanning = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val scanGeneration = java.util.concurrent.atomic.AtomicLong(0)
-
     private var socket: DatagramSocket? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private var scanExecutor: java.util.concurrent.ExecutorService? = null
@@ -206,37 +203,23 @@ class LanDiscovery(
                 }
 
                 if (!isConnected) {
-                    // 未连接状态：执行子网并发探测，随后休眠 25 秒（电脑端开机会主动广播与单播唤醒手机）
+                    // 未连接状态：全网段高频并发探测
                     fastSubnetScan()
                     try {
-                        Thread.sleep(25000)
+                        Thread.sleep(2500)
                     } catch (e: InterruptedException) {
                         break
                     }
                 } else {
-                    // 已连接状态：转入低频休眠 (60 秒)，极大节约待机功耗
+                    // 已连接状态：转入低频保活探测 (休眠 8 秒)，节约功耗同时持续感知网络变化
                     try {
-                        Thread.sleep(60000)
+                        Thread.sleep(8000)
                     } catch (e: InterruptedException) {
                         break
                     }
                 }
             }
         }.start()
-    }
-
-    /**
-     * 外部事件驱动触发单次快速探活 (如屏幕点亮、网络切换时调用)
-     */
-    fun requestImmediateScan() {
-        if (!isSearching || isConnected) return
-        Thread {
-            fastSubnetScan()
-        }.apply {
-            isDaemon = true
-            name = "CrossClip-ImmediateScan"
-            start()
-        }
     }
 
     private fun isSameSubnetAny(ip: String, localIps: List<String>): Boolean {
@@ -247,16 +230,10 @@ class LanDiscovery(
     }
 
     /**
-     * 快速并发扫描当前子网所有 IP 的 18236 端口 (带世代保护与互斥防积压)
+     * 快速并发扫描当前子网所有 IP 的 18236 端口 (确保 100% 发现)
      */
     private fun fastSubnetScan() {
         val executor = scanExecutor ?: return
-        if (!isSubnetScanning.compareAndSet(false, true)) {
-            // 上一轮探测仍在进行中，跳过本次触发，绝不堵塞线程池
-            return
-        }
-
-        val gen = scanGeneration.incrementAndGet()
         val localIps = getLocalIpv4List()
         val prefixesToScan = mutableSetOf<String>()
 
@@ -272,48 +249,28 @@ class LanDiscovery(
             val hintParts = currentHintIp.split(".")
             if (hintParts.size == 4) {
                 prefixesToScan.add("${hintParts[0]}.${hintParts[1]}.${hintParts[2]}")
-                // 高优先级单发探测 hintIp
+                // 首先单发探测 hintIp
                 try {
                     executor.submit {
-                        if (gen == scanGeneration.get() && isSearching && !isConnected) {
-                            probeIp(currentHintIp)
-                        }
+                        probeIp(currentHintIp)
                     }
                 } catch (_: java.util.concurrent.RejectedExecutionException) {}
             }
         }
 
-        // 异步派发全子网探测，利用 Future 确保全部完成或超时时释放 isSubnetScanning 互斥锁
-        Thread {
-            try {
-                val tasks = mutableListOf<java.util.concurrent.Future<*>>()
-                for (subnetPrefix in prefixesToScan) {
-                    for (i in 1..254) {
-                        val targetIp = "$subnetPrefix.$i"
-                        if (localIps.contains(targetIp)) continue
-                        try {
-                            val future = executor.submit {
-                                if (gen != scanGeneration.get() || !isSearching || isConnected) return@submit
-                                probeIp(targetIp)
-                            }
-                            tasks.add(future)
-                        } catch (_: java.util.concurrent.RejectedExecutionException) {
-                            break
-                        }
+        for (subnetPrefix in prefixesToScan) {
+            for (i in 1..254) {
+                val targetIp = "$subnetPrefix.$i"
+                if (localIps.contains(targetIp)) continue
+                try {
+                    executor.submit {
+                        if (!isSearching || isConnected) return@submit
+                        probeIp(targetIp)
                     }
+                } catch (_: java.util.concurrent.RejectedExecutionException) {
+                    return
                 }
-                for (task in tasks) {
-                    try {
-                        task.get(1500, TimeUnit.MILLISECONDS)
-                    } catch (_: Exception) {}
-                }
-            } finally {
-                isSubnetScanning.set(false)
             }
-        }.apply {
-            isDaemon = true
-            name = "CrossClip-SubnetSupervisor"
-            start()
         }
     }
 

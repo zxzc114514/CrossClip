@@ -10,8 +10,6 @@ pub struct AppConfig {
     pub pin_code: String,
     pub http_port: u16,
     pub auto_sync: bool,
-    #[serde(default)]
-    pub last_phone_ip: Option<String>,
 }
 
 pub fn generate_random_pin() -> String {
@@ -59,7 +57,6 @@ pub fn load_or_init_config() -> AppConfig {
         pin_code: pin,
         http_port: 18236,
         auto_sync: true,
-        last_phone_ip: None,
     };
 
     save_config(&new_cfg);
@@ -83,17 +80,5 @@ pub fn update_persisted_auto_sync(auto_sync: bool) {
     let mut cfg = load_or_init_config();
     cfg.auto_sync = auto_sync;
     save_config(&cfg);
-}
-
-pub fn update_persisted_phone_ip(phone_ip: &str) {
-    let ip_clean = phone_ip.trim();
-    if ip_clean.is_empty() || ip_clean.starts_with("127.") {
-        return;
-    }
-    let mut cfg = load_or_init_config();
-    if cfg.last_phone_ip.as_deref() != Some(ip_clean) {
-        cfg.last_phone_ip = Some(ip_clean.to_string());
-        save_config(&cfg);
-    }
 }
 
