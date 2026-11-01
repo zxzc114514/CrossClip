@@ -340,7 +340,11 @@ unsafe extern "system" fn wnd_proc(
                             .encode_wide()
                             .chain(Some(0))
                             .collect();
-                    let ip_text: Vec<u16> = OsStr::new(&format!("🌐 本机 IP: {}", state.main_ip))
+                    let live_ip = ip_util::get_local_lan_ips()
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| state.main_ip.clone());
+                    let ip_text: Vec<u16> = OsStr::new(&format!("🌐 本机 IP: {}", live_ip))
                         .encode_wide()
                         .chain(Some(0))
                         .collect();
@@ -491,13 +495,11 @@ fn main() {
     let broadcaster =
         server::Broadcaster::new(pin_code_arc.clone(), cfg.device_id.clone());
 
-    // 2. 启动 UDP 广播自动应答服务 (附带物理 IP)
-    let pin_for_udp = pin_code_arc.clone();
+    // 2. 启动 UDP 广播自动应答服务 (附带物理 IP，不暴露 PIN 哈希)
     udp_discovery::start_udp_discovery_responder(
         cfg.device_name.clone(),
         cfg.device_id.clone(),
         cfg.http_port,
-        pin_for_udp,
     );
 
     // 3. 启动 mDNS 广播

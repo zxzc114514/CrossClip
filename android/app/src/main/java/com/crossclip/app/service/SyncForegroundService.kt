@@ -13,7 +13,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
-import android.net.wifi.WifiManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -30,7 +32,6 @@ import com.crossclip.app.network.NsdHelper
 import com.crossclip.app.network.SseClient
 import com.crossclip.app.shizuku.ShizukuClipboardManager
 import com.crossclip.app.shizuku.ShizukuPrivilegeHelper
-import com.crossclip.app.ui.ClipWriteActivity
 import com.crossclip.app.ui.MainActivity
 import com.crossclip.app.util.DebugLogger
 import java.util.ArrayDeque
@@ -54,8 +55,6 @@ class SyncForegroundService : Service() {
         const val CHANNEL_ID = "cross_clip_silent_v2"
         const val NOTIFICATION_ID = 1001
         const val ACTION_MANUAL_SEND = "com.crossclip.app.ACTION_MANUAL_SEND"
-        const val ACTION_WATCHDOG = "com.crossclip.app.ACTION_WATCHDOG"
-        private const val WATCHDOG_INTERVAL_MS = 2 * 60 * 1000L
 
         @Volatile
         var instance: SyncForegroundService? = null
@@ -99,10 +98,9 @@ class SyncForegroundService : Service() {
     private var autoSync: Boolean = true
     @Volatile
     private var selfTestWriteInProgress = false
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
     private var heartbeatExecutor: ScheduledExecutorService? = null
     private var screenStateReceiver: BroadcastReceiver? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private var heartbeatCount = 0L
     private var lastHeartbeatNotify = 0L
@@ -139,23 +137,39 @@ class SyncForegroundService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("正在自动搜索局域网电脑..."))
         registerScreenStateReceiver()
+        registerNetworkCallback()
         startHeartbeat()
 
         // 启动本地微型 HTTP 服务端 (监听端口 18237)
-        localHttpServer = LocalHttpServer(18237) { encrypted, hash, _ ->
-            if (pinCode.isNotEmpty()) {
-                try {
-                    val decrypted = CryptoUtil.decrypt(encrypted, pinCode)
-                    if (CryptoUtil.computeHash(decrypted) == hash) {
-                        onNetworkTextReceived(decrypted)
-                    } else {
-                        DebugLogger.log("LOCAL_HTTP", "解密文本 Hash 不匹配: 计算=${CryptoUtil.computeHash(decrypted)} vs 接收=$hash")
+        localHttpServer = LocalHttpServer(
+            port = 18237,
+            onWakeupReceived = { remoteIp, reqPcIp, reqPort, devId, devName ->
+                acquireTransientWakeLock(3000L)
+                val targetIp = reqPcIp.ifEmpty { remoteIp }
+                val targetId = if (devId.isNotEmpty()) devId else "pc_${targetIp.replace('.', '_')}"
+                val targetName = if (devName.isNotEmpty()) devName else "Windows 电脑"
+                DebugLogger.log("SVC_WAKEUP", "收到电脑端主动唤醒通知: ip=$targetIp, port=$reqPort, id=$targetId, name=$targetName")
+                onDeviceDiscovered(targetId, targetName, targetIp, reqPort)
+            },
+            onLocalDaemonClipReceived = { daemonClipText ->
+                DebugLogger.log("CLIP_DAEMON", "收到独立 ClipShellDaemon (UID 2000) 推送的剪贴板变更")
+                onLocalClipboardTextDetected(daemonClipText, "ClipShellDaemon")
+            },
+            onSyncReceived = { encrypted, hash, _ ->
+                if (pinCode.isNotEmpty()) {
+                    try {
+                        val decrypted = CryptoUtil.decrypt(encrypted, pinCode)
+                        if (CryptoUtil.computeHash(decrypted) == hash) {
+                            onNetworkTextReceived(decrypted)
+                        } else {
+                            DebugLogger.log("LOCAL_HTTP", "解密文本 Hash 不匹配: 计算=${CryptoUtil.computeHash(decrypted)} vs 接收=$hash")
+                        }
+                    } catch (e: Exception) {
+                        DebugLogger.log("LOCAL_HTTP", "解密对等推送剪贴板异常: ${e.message}", e)
                     }
-                } catch (e: Exception) {
-                    DebugLogger.log("LOCAL_HTTP", "解密对等推送剪贴板异常: ${e.message}", e)
                 }
             }
-        }
+        )
         localHttpServer?.start()
 
         initNetwork()
@@ -189,7 +203,14 @@ class SyncForegroundService : Service() {
                             discoveredDevices[devId] = DiscoveredDevice(devId, currentPcName, currentPcIp, currentHttpPort, now)
                         }
                     } else if (!ok && connectionState == 1) {
-                        DebugLogger.log("HEARTBEAT", "心跳上报失败，电脑端已离线，清空当前连接并切换为搜索中")
+                        DebugLogger.log("HEARTBEAT", "心跳上报失败，电脑端已离线，立即切断半开连接并触发快速重连")
+                        connectTokenCounter.incrementAndGet()
+                        if (::sseClient.isInitialized) {
+                            sseClient.disconnect(notifyChange = false)
+                        }
+                        if (currentPcIp.isNotEmpty()) {
+                            lastSavedPcIp = currentPcIp
+                        }
                         connectionState = 0
                         lanDiscovery.isConnected = false
                         currentPcIp = ""
@@ -197,17 +218,108 @@ class SyncForegroundService : Service() {
                         mainHandler.post {
                             updateNotification("正在重新搜索局域网电脑...")
                         }
+                        triggerFastReconnect("心跳超时")
                     }
                 }
+            } else if (connectionState == 0 && pinCode.isNotEmpty()) {
+                triggerFastReconnect("周期自愈")
             }
             mainHandler.post {
                 maybeUpdateHeartbeatNotification()
             }
-        }, 15, 15, TimeUnit.SECONDS)
+        }, 12, 12, TimeUnit.SECONDS)
     }
 
     private val workerExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "CrossClip-Worker").apply { isDaemon = true }
+    }
+
+    /**
+     * 毫秒级快速重连：优先对历史电脑 IP 发起单点密文挑战握手，并同步唤醒 UDP 脉冲与子网扫描
+     */
+    fun triggerFastReconnect(reason: String) {
+        workerExecutor.execute {
+            val hintIp = lastSavedPcIp.ifEmpty { currentPcIp }
+            DebugLogger.log("FAST_RECONNECT", "触发快速重连 ($reason): state=$connectionState, hintIp=$hintIp, pin.len=${pinCode.length}")
+            if (hintIp.isNotEmpty() && pinCode.isNotEmpty() && connectionState != 1) {
+                val targetId = currentTargetDeviceId.ifEmpty { "pc_${hintIp.replace('.', '_')}" }
+                val targetName = if (currentPcName.isNotEmpty() && currentPcName != "未连接") currentPcName else "Windows 电脑"
+                onDeviceDiscovered(targetId, targetName, hintIp, currentHttpPort)
+            }
+            if (::lanDiscovery.isInitialized) {
+                lanDiscovery.requestImmediateScan(hintIp)
+            }
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val request = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                .build()
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    DebugLogger.log("NET_CALLBACK", "局域网网络已就绪 (onAvailable): $network")
+                    val checkAndReconnect = Runnable {
+                        workerExecutor.execute {
+                            if (connectionState == 1 && currentPcIp.isNotEmpty() && pinCode.isNotEmpty()) {
+                                HttpUploader.sendHeartbeat(currentPcIp, currentHttpPort, pinCode, deviceId, deviceName, 18237) { ok ->
+                                    if (!ok) {
+                                        DebugLogger.log("NET_CALLBACK", "网络切换后原连接探活失败，立即重置并重连")
+                                        connectTokenCounter.incrementAndGet()
+                                        if (::sseClient.isInitialized) {
+                                            sseClient.disconnect(notifyChange = false)
+                                        }
+                                        if (currentPcIp.isNotEmpty()) {
+                                            lastSavedPcIp = currentPcIp
+                                        }
+                                        connectionState = 0
+                                        lanDiscovery.isConnected = false
+                                        currentPcIp = ""
+                                        currentPcName = "未连接"
+                                        triggerFastReconnect("Wi-Fi 切换重连")
+                                    }
+                                }
+                            } else {
+                                triggerFastReconnect("Wi-Fi 连回")
+                            }
+                        }
+                    }
+                    checkAndReconnect.run()
+                    mainHandler.postDelayed(checkAndReconnect, 600L)
+                    mainHandler.postDelayed(checkAndReconnect, 1800L)
+                }
+
+                override fun onLost(network: Network) {
+                    DebugLogger.log("NET_CALLBACK", "局域网网络已断开 (onLost): $network")
+                    workerExecutor.execute {
+                        connectTokenCounter.incrementAndGet()
+                        if (::sseClient.isInitialized) {
+                            sseClient.disconnect(notifyChange = false)
+                        }
+                        if (currentPcIp.isNotEmpty()) {
+                            lastSavedPcIp = currentPcIp
+                        }
+                        connectionState = 0
+                        if (::lanDiscovery.isInitialized) {
+                            lanDiscovery.isConnected = false
+                        }
+                        currentPcIp = ""
+                        currentPcName = "未连接"
+                        mainHandler.post {
+                            updateNotification("Wi-Fi 已断开，回到局域网将自动重连")
+                        }
+                    }
+                }
+            }
+            cm.registerNetworkCallback(request, callback)
+            networkCallback = callback
+            DebugLogger.log("NET_CALLBACK", "已注册 ConnectivityManager.NetworkCallback 实时监听局域网变更")
+        } catch (e: Exception) {
+            DebugLogger.log("NET_CALLBACK", "注册 NetworkCallback 失败: ${e.message}")
+        }
     }
 
     private fun registerScreenStateReceiver() {
@@ -217,8 +329,6 @@ class SyncForegroundService : Service() {
                 addAction(Intent.ACTION_USER_PRESENT)
                 addAction(Intent.ACTION_SCREEN_OFF)
                 addAction("com.crossclip.app.WAKEUP")
-                @Suppress("DEPRECATION")
-                addAction(ConnectivityManager.CONNECTIVITY_ACTION)
             }
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context?, intent: Intent?) {
@@ -227,8 +337,10 @@ class SyncForegroundService : Service() {
                         if (action == "com.crossclip.app.WAKEUP") {
                             DebugLogger.log("WAKEUP_PULSE", "收到 Shell (UID 2000) 守护心跳唤醒脉冲")
                             onLocalClipboardChanged()
-                            if (currentPcIp.isNotEmpty() && pinCode.isNotEmpty()) {
+                            if (connectionState == 1 && currentPcIp.isNotEmpty() && pinCode.isNotEmpty()) {
                                 HttpUploader.sendHeartbeat(currentPcIp, currentHttpPort, pinCode, deviceId, deviceName, 18237)
+                            } else if (connectionState != 1 && pinCode.isNotEmpty()) {
+                                triggerFastReconnect("Shell 守护脉冲唤醒")
                             }
                             return@execute
                         }
@@ -243,8 +355,14 @@ class SyncForegroundService : Service() {
                         if (action == Intent.ACTION_SCREEN_ON || action == Intent.ACTION_USER_PRESENT) {
                             ShizukuClipboardManager.resumePollingForScreenOn()
                             onLocalClipboardChanged()
-                            if (currentPcIp.isNotEmpty() && pinCode.isNotEmpty()) {
-                                HttpUploader.sendHeartbeat(currentPcIp, currentHttpPort, pinCode, deviceId, deviceName, 18237)
+                            if (connectionState == 1 && currentPcIp.isNotEmpty() && pinCode.isNotEmpty()) {
+                                HttpUploader.sendHeartbeat(currentPcIp, currentHttpPort, pinCode, deviceId, deviceName, 18237) { ok ->
+                                    if (!ok) {
+                                        triggerFastReconnect("亮屏探活失败")
+                                    }
+                                }
+                            } else {
+                                triggerFastReconnect("手机亮屏/解锁")
                             }
                         }
                     }
@@ -256,8 +374,8 @@ class SyncForegroundService : Service() {
                 registerReceiver(receiver, filter)
             }
             screenStateReceiver = receiver
-            Log.i(TAG, "已动态注册屏幕与网络事件监听广播 (含 Shell 守护唤醒)")
-            DebugLogger.log("SVC", "已动态注册屏幕与网络事件监听广播 (含 Shell 守护唤醒)")
+            Log.i(TAG, "已动态注册屏幕与守护唤醒广播")
+            DebugLogger.log("SVC", "已动态注册屏幕与守护唤醒广播")
         } catch (e: Exception) {
             Log.w(TAG, "注册屏幕广播失败: ${e.message}")
             DebugLogger.log("SVC", "注册屏幕广播失败: ${e.message}")
@@ -295,8 +413,10 @@ class SyncForegroundService : Service() {
             sp.getString("pin_code_$currentTargetDeviceId", "") ?: ""
         } else ""
         pinCode = if (devPin.isNotEmpty()) devPin else (sp.getString("pin_code", "") ?: "")
-        currentPcIp = ""
-        currentPcName = "未连接"
+        if (connectionState != 1) {
+            currentPcIp = ""
+            currentPcName = "未连接"
+        }
         DebugLogger.log("SVC_CONFIG", "加载配置: targetId=$currentTargetDeviceId, hintIp=$lastSavedPcIp, port=$currentHttpPort, pin.len=${pinCode.length}, autoSync=$autoSync")
     }
 
@@ -328,10 +448,21 @@ class SyncForegroundService : Service() {
                         connectionState = 0
                     }
                     lanDiscovery.isConnected = false
+                    if (pinCode.isNotEmpty()) {
+                        triggerFastReconnect("SSE 断开自愈")
+                    }
                 }
                 mainHandler.post {
                     val statusText = if (connected) "已连接电脑 (${currentPcName})" else "搜索电脑中..."
                     updateNotification(statusText)
+                }
+            },
+            onAuthRejected = {
+                DebugLogger.log("SVC_NET", "SSE 鉴权被拒绝 (403)，停止盲目重连并提示核对 PIN 码")
+                connectionState = 2
+                lanDiscovery.isConnected = false
+                mainHandler.post {
+                    updateNotification("PIN 码已变更或不匹配，请重新输入")
                 }
             }
         )
@@ -353,7 +484,7 @@ class SyncForegroundService : Service() {
         nsdHelper.startDiscovery()
 
         // 2. UDP 局域网广播 + 当前子网并发快速探测 (强力自发现)
-        lanDiscovery = LanDiscovery(this) { devId, name, ip, httpPort, _ ->
+        lanDiscovery = LanDiscovery(this) { devId, name, ip, httpPort ->
             DebugLogger.log("DISCOVERY", "UDP/并发探测发现设备: id=$devId, name=$name, ip=$ip, port=$httpPort")
             onDeviceDiscovered(devId, name, ip, httpPort)
         }
@@ -470,12 +601,13 @@ class SyncForegroundService : Service() {
                         if (token != connectTokenCounter.get()) return@post
                         if (success) {
                             currentPcIp = ip
+                            lastSavedPcIp = ip
                             currentHttpPort = httpPort
                             currentPcName = devName ?: name
                             val sp = getSharedPreferences("cross_clip_config", Context.MODE_PRIVATE)
                             sp.edit().putString("last_pc_ip", ip).apply()
-                            val sseUrl = "http://$ip:$httpPort/events?pin=$pinCode"
-                            sseClient.connect(sseUrl)
+                            val sseUrl = "http://$ip:$httpPort/events"
+                            sseClient.connect(sseUrl, pinCode, deviceId, deviceName)
                             updateNotification("已连接电脑 ($currentPcName)")
                         }
                     }
@@ -490,7 +622,8 @@ class SyncForegroundService : Service() {
         val devPin = sp.getString("pin_code_$finalDevId", "") ?: ""
         val candidatePin = if (devPin.isNotEmpty()) devPin else pinCode
 
-        if ((currentTargetDeviceId.isEmpty() || currentTargetDeviceId == finalDevId) && candidatePin.isNotEmpty()) {
+        val isTargetCandidate = (currentTargetDeviceId.isEmpty() || currentTargetDeviceId == finalDevId || lastSavedPcIp == ip)
+        if (isTargetCandidate && candidatePin.isNotEmpty()) {
             if (connectionState == 0 || (connectionState == -1 && ip != currentPcIp)) {
                 shouldTriggerConnect = true
             }
@@ -514,6 +647,7 @@ class SyncForegroundService : Service() {
                         val boundId = retDevId ?: finalDevId
                         currentTargetDeviceId = boundId
                         currentPcIp = ip
+                        lastSavedPcIp = ip
                         currentHttpPort = httpPort
                         currentPcName = devName ?: name
                         pinCode = candidatePin
@@ -526,8 +660,8 @@ class SyncForegroundService : Service() {
                         editor.apply()
 
                         updateNotification("已连接电脑 ($currentPcName)")
-                        val sseUrl = "http://$ip:$httpPort/events?pin=$candidatePin"
-                        sseClient.connect(sseUrl)
+                        val sseUrl = "http://$ip:$httpPort/events"
+                        sseClient.connect(sseUrl, candidatePin, deviceId, deviceName)
                     } else if (statusCode == 403) {
                         connectionState = 2
                         updateNotification("PIN 码不匹配，请核对电脑 PIN 码")
@@ -551,6 +685,7 @@ class SyncForegroundService : Service() {
 
         currentTargetDeviceId = device.deviceId
         currentPcIp = device.ip
+        lastSavedPcIp = device.ip
         currentHttpPort = device.httpPort
         currentPcName = device.name
 
@@ -586,6 +721,7 @@ class SyncForegroundService : Service() {
     ) {
         val token = connectTokenCounter.incrementAndGet()
         currentPcIp = ip
+        lastSavedPcIp = ip
         pinCode = pin
         currentHttpPort = httpPort
         connectionState = -1 // 验证中
@@ -621,8 +757,8 @@ class SyncForegroundService : Service() {
                             .apply()
                     }
                     updateNotification("已连接电脑 ($currentPcName)")
-                    val sseUrl = "http://$ip:$httpPort/events?pin=$pin"
-                    sseClient.connect(sseUrl)
+                    val sseUrl = "http://$ip:$httpPort/events"
+                    sseClient.connect(sseUrl, pin, deviceId, deviceName)
                     callback(true, 200, currentPcName)
                 } else if (statusCode == 403) {
                     connectionState = 2
@@ -644,7 +780,7 @@ class SyncForegroundService : Service() {
             var readSource = "none"
             if (ShizukuClipboardManager.isReady()) {
                 text = ShizukuClipboardManager.readClipboard()
-                readSource = "Shizuku"
+                readSource = if (ShizukuClipboardManager.isDaemonAliveOnly()) "ClipShellDaemon" else "Shizuku"
             }
             if (text.isNullOrEmpty()) {
                 val clip = clipboardManager.primaryClip
@@ -654,24 +790,29 @@ class SyncForegroundService : Service() {
                 }
             }
             if (!text.isNullOrEmpty()) {
-                val hash = CryptoUtil.computeHash(text)
-                synchronized(recentHashes) {
-                    if (recentHashes.contains(hash)) {
-                        return
-                    }
-                    recentHashes.add(hash)
-                    if (recentHashes.size > 50) recentHashes.removeFirst()
-                }
-                val preview = if (text.length > 20) text.take(20) + "..." else text
-                Log.i(TAG, "检测到本地复制 ($readSource)，正在静默自动同步至电脑...")
-                lastSyncEvent = "手机复制: 长度 ${text.length}"
-                DebugLogger.log("CLIP_DETECT", "检测到本地新剪贴板 [$readSource]: 长度=${text.length}, hash=$hash, 预览=[$preview]")
-                doBroadcastText(text)
+                onLocalClipboardTextDetected(text, readSource)
             }
         } catch (e: Exception) {
             Log.e(TAG, "读取剪贴板异常: ${e.message}")
             DebugLogger.log("CLIP_DETECT", "读取剪贴板异常: ${e.javaClass.simpleName}: ${e.message}", e)
         }
+    }
+
+    private fun onLocalClipboardTextDetected(text: String, readSource: String) {
+        if (!autoSync || selfTestWriteInProgress || text.isEmpty()) return
+        val hash = CryptoUtil.computeHash(text)
+        synchronized(recentHashes) {
+            if (recentHashes.contains(hash)) {
+                return
+            }
+            recentHashes.add(hash)
+            if (recentHashes.size > 50) recentHashes.removeFirst()
+        }
+        val preview = if (text.length > 20) text.take(20) + "..." else text
+        Log.i(TAG, "检测到本地复制 ($readSource)，正在静默自动同步至电脑...")
+        lastSyncEvent = "手机复制: 长度 ${text.length}"
+        DebugLogger.log("CLIP_DETECT", "检测到本地新剪贴板 [$readSource]: 长度=${text.length}, hash=$hash, 预览=[$preview]")
+        doBroadcastText(text)
     }
 
     private fun doBroadcastText(text: String, onComplete: ((Boolean) -> Unit)? = null) {
@@ -720,19 +861,6 @@ class SyncForegroundService : Service() {
                 DebugLogger.log("CLIP_WRITE", "普通 setPrimaryClip 写入完成")
             } catch (e: Exception) {
                 DebugLogger.log("CLIP_WRITE", "普通 setPrimaryClip 异常: ${e.message}")
-            }
-
-            // 3. 降级方案：拉起透明瞬时 Activity 确保获得前台焦点写入系统剪贴板
-            try {
-                val intent = Intent(this, ClipWriteActivity::class.java).apply {
-                    putExtra("EXTRA_TEXT", text)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                }
-                startActivity(intent)
-                DebugLogger.log("CLIP_WRITE", "拉起 ClipWriteActivity 兜底写入")
-            } catch (e: Exception) {
-                Log.w(TAG, "降级拉起 ClipWriteActivity 写入: ${e.message}")
-                DebugLogger.log("CLIP_WRITE", "降级拉起 ClipWriteActivity 失败: ${e.message}")
             }
         }
     }
@@ -860,6 +988,9 @@ class SyncForegroundService : Service() {
         val action = intent?.action ?: "NORMAL_START"
         DebugLogger.log("SVC_LIFECYCLE", "SyncForegroundService.onStartCommand: action=$action, flags=$flags, startId=$startId")
         loadPreferences()
+        if (connectionState != 1 && pinCode.isNotEmpty()) {
+            triggerFastReconnect("onStartCommand:$action")
+        }
         if (intent?.action == ACTION_MANUAL_SEND) {
             sendCurrentClipboardManual()
         }
@@ -901,24 +1032,17 @@ class SyncForegroundService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         DebugLogger.log("SVC_LIFECYCLE", "SyncForegroundService.onDestroy 服务销毁")
-        try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
-        } catch (_: Exception) {}
-        wakeLock = null
-
-        try {
-            if (wifiLock?.isHeld == true) {
-                wifiLock?.release()
-            }
-        } catch (_: Exception) {}
-        wifiLock = null
 
         try {
             screenStateReceiver?.let { unregisterReceiver(it) }
         } catch (_: Exception) {}
         screenStateReceiver = null
+
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            networkCallback?.let { cm?.unregisterNetworkCallback(it) }
+        } catch (_: Exception) {}
+        networkCallback = null
 
         heartbeatExecutor?.shutdownNow()
         heartbeatExecutor = null

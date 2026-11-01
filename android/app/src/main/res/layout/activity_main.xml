@@ -10,555 +10,509 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="16dp">
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="18dp"
+        android:paddingBottom="24dp">
 
-        <!-- 1. 顶部 Header 卡片：品牌与实时状态 -->
-        <androidx.cardview.widget.CardView
+        <!-- 1. 一体化主控台：品牌、实时链路状态、电脑选择与动态配对栏 -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            app:cardCornerRadius="16dp"
-            app:cardElevation="1dp"
-            app:cardBackgroundColor="@color/card_bg"
-            android:layout_marginBottom="12dp">
+            android:orientation="vertical"
+            android:background="@drawable/bg_hero_card"
+            android:padding="18dp"
+            android:layout_marginBottom="14dp">
 
+            <!-- 顶部标题行 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <TextView
-                        android:id="@+id/tv_app_title"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="CrossClip"
-                        android:textSize="22sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_primary" />
-
-                    <TextView
-                        android:id="@+id/tv_version_badge"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="v1.0.11"
-                        android:textSize="11sp"
-                        android:textColor="@color/primary"
-                        android:background="#E0E7FF"
-                        android:paddingStart="8dp"
-                        android:paddingEnd="8dp"
-                        android:paddingTop="3dp"
-                        android:paddingBottom="3dp" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:layout_marginTop="10dp">
-
-                    <TextView
-                        android:id="@+id/tv_status"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="● 正在自动搜索局域网电脑..."
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_secondary" />
-                </LinearLayout>
-            </LinearLayout>
-        </androidx.cardview.widget.CardView>
-
-        <!-- 2. 核心配对卡片：设备与 PIN 码安全连接 -->
-        <androidx.cardview.widget.CardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            app:cardCornerRadius="16dp"
-            app:cardElevation="1dp"
-            app:cardBackgroundColor="@color/card_bg"
-            android:layout_marginBottom="12dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="电脑配对"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_primary" />
-
-                    <TextView
-                        android:id="@+id/btn_refresh_scan"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="🔄 重新扫描"
-                        android:textSize="12sp"
-                        android:textColor="@color/primary"
-                        android:padding="4dp" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:id="@+id/ll_device_header"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:layout_marginTop="4dp"
-                    android:background="?attr/selectableItemBackground"
-                    android:paddingTop="2dp"
-                    android:paddingBottom="2dp">
-
-                    <TextView
-                        android:id="@+id/tv_discovered_device"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="正在搜索局域网内已启动的电脑..."
-                        android:textSize="13sp"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/btn_switch_device"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="切换电脑"
-                        android:textSize="12sp"
-                        android:textColor="@color/primary"
-                        android:textStyle="bold"
-                        android:paddingStart="8dp"
-                        android:paddingEnd="4dp"
-                        android:paddingTop="4dp"
-                        android:paddingBottom="4dp"
-                        android:visibility="gone" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:layout_marginTop="12dp">
-
-                    <EditText
-                        android:id="@+id/et_pin_code"
-                        android:layout_width="0dp"
-                        android:layout_height="46dp"
-                        android:layout_weight="1"
-                        android:hint="输入 6 位 PIN 码"
-                        android:inputType="number"
-                        android:maxLength="6"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        android:gravity="center"
-                        android:letterSpacing="0.15"
-                        android:background="#F1F5F9"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp" />
-
-                    <Button
-                        android:id="@+id/btn_connect_pc"
-                        android:layout_width="wrap_content"
-                        android:layout_height="46dp"
-                        android:layout_marginStart="10dp"
-                        android:minWidth="92dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
-                        android:text="一键连接"
-                        android:textAllCaps="false"
-                        android:textSize="14sp" />
-                </LinearLayout>
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
 
                 <TextView
-                    android:id="@+id/tv_toggle_manual_ip"
+                    android:id="@+id/tv_app_title"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:text="⚙️ 跨网段或无法自发现？点击手动指定电脑 IP"
-                    android:textSize="12sp"
-                    android:textColor="@color/text_muted" />
-
-                <LinearLayout
-                    android:id="@+id/ll_manual_ip_container"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginTop="8dp"
-                    android:visibility="gone">
-
-                    <EditText
-                        android:id="@+id/et_manual_ip"
-                        android:layout_width="0dp"
-                        android:layout_height="42dp"
-                        android:layout_weight="1"
-                        android:hint="电脑 IP，如 192.168.1.100"
-                        android:inputType="textUri"
-                        android:textSize="13sp"
-                        android:background="#F1F5F9"
-                        android:paddingStart="10dp"
-                        android:paddingEnd="10dp" />
-
-                    <Button
-                        android:id="@+id/btn_apply_manual_ip"
-                        android:layout_width="wrap_content"
-                        android:layout_height="42dp"
-                        android:layout_marginStart="8dp"
-                        android:text="保存 IP"
-                        android:textSize="12sp" />
-                </LinearLayout>
-            </LinearLayout>
-        </androidx.cardview.widget.CardView>
-
-        <!-- 手动发送卡片 (手动模式时在电脑配对下方直接浮现) -->
-        <androidx.cardview.widget.CardView
-            android:id="@+id/card_manual_sync"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            app:cardCornerRadius="16dp"
-            app:cardElevation="1dp"
-            app:cardBackgroundColor="@color/card_bg"
-            android:visibility="gone"
-            android:layout_marginBottom="12dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="手动发送当前剪贴板"
-                    android:textSize="16sp"
+                    android:text="CrossClip"
+                    android:textSize="21sp"
                     android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="-0.02"
                     android:textColor="@color/text_primary" />
+
+                <TextView
+                    android:id="@+id/tv_version_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="v1.2.0"
+                    android:textSize="11sp"
+                    android:fontFamily="monospace"
+                    android:textColor="@color/primary"
+                    android:background="@drawable/bg_badge_pill"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:paddingTop="2dp"
+                    android:paddingBottom="2dp" />
+
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:id="@+id/btn_refresh_scan"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="重新扫描"
+                    android:textSize="12sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/primary"
+                    android:background="?attr/selectableItemBackground"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="4dp"
+                    android:paddingTop="4dp"
+                    android:paddingBottom="4dp" />
+            </LinearLayout>
+
+            <!-- 实时连接状态指示 -->
+            <TextView
+                android:id="@+id/tv_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="正在搜索局域网内的电脑..."
+                android:textSize="14sp"
+                android:fontFamily="sans-serif-medium"
+                android:textColor="@color/text_secondary" />
+
+            <!-- 在线电脑探测与切换槽位 -->
+            <LinearLayout
+                android:id="@+id/ll_device_header"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_recessed_box"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="10dp"
+                android:paddingBottom="10dp">
+
+                <TextView
+                    android:id="@+id/tv_discovered_device"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="正在扫描当前 Wi-Fi 子网..."
+                    android:textSize="12sp"
+                    android:fontFamily="monospace"
+                    android:textColor="@color/text_secondary" />
+
+                <TextView
+                    android:id="@+id/btn_switch_device"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="切换电脑"
+                    android:textSize="12sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/primary"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="2dp"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- 已连接态横幅（连接成功后自动呈现，替代 PIN 码输入区） -->
+            <LinearLayout
+                android:id="@+id/ll_connected_bar"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_connected_banner"
+                android:paddingStart="12dp"
+                android:paddingEnd="10dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/tv_connected_summary"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="AES-256-GCM 加密通道已就绪，离开再回自动秒连"
+                    android:textSize="12sp"
+                    android:textColor="@color/success_color" />
+
+                <Button
+                    android:id="@+id/btn_disconnect_pc"
+                    android:layout_width="wrap_content"
+                    android:layout_height="34dp"
+                    android:minHeight="34dp"
+                    android:minWidth="72dp"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:text="断开连接"
+                    android:textSize="12sp"
+                    android:textAllCaps="false" />
+            </LinearLayout>
+
+            <!-- 未连接态：6 位 PIN 码输入与配对操作行（已连接时自动收起） -->
+            <LinearLayout
+                android:id="@+id/ll_pin_input_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="12dp">
+
+                <EditText
+                    android:id="@+id/et_pin_code"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_weight="1"
+                    android:hint="输入电脑 6 位 PIN 码"
+                    android:inputType="number"
+                    android:maxLength="6"
+                    android:textSize="15sp"
+                    android:fontFamily="monospace"
+                    android:textStyle="bold"
+                    android:gravity="center"
+                    android:letterSpacing="0.12"
+                    android:textColor="@color/text_primary"
+                    android:textColorHint="@color/text_muted"
+                    android:background="@drawable/bg_input_field"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp" />
+
+                <Button
+                    android:id="@+id/btn_connect_pc"
+                    android:layout_width="wrap_content"
+                    android:layout_height="44dp"
+                    android:layout_marginStart="10dp"
+                    android:minWidth="96dp"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:text="连接电脑"
+                    android:textAllCaps="false"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tv_toggle_manual_ip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="跨网段或未搜到电脑？手动指定电脑 IP"
+                android:textSize="12sp"
+                android:textColor="@color/text_muted" />
+
+            <LinearLayout
+                android:id="@+id/ll_manual_ip_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="8dp"
+                android:visibility="gone">
+
+                <EditText
+                    android:id="@+id/et_manual_ip"
+                    android:layout_width="0dp"
+                    android:layout_height="40dp"
+                    android:layout_weight="1"
+                    android:hint="如 192.168.1.100"
+                    android:inputType="textUri"
+                    android:textSize="13sp"
+                    android:fontFamily="monospace"
+                    android:textColor="@color/text_primary"
+                    android:textColorHint="@color/text_muted"
+                    android:background="@drawable/bg_input_field"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp" />
+
+                <Button
+                    android:id="@+id/btn_apply_manual_ip"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="8dp"
+                    android:text="连接此 IP"
+                    android:textAllCaps="false"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- 2. 核心同步与特权守护引擎面板 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_section_card"
+            android:padding="16dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="同步引擎与系统特权"
+                android:textSize="15sp"
+                android:fontFamily="sans-serif-medium"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary" />
+
+            <!-- 自动互传开关 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="12dp">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="全自动无感互传"
+                        android:textSize="14sp"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="@color/text_primary" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="手机与电脑复制文本后后台静默双向同步"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary" />
+                </LinearLayout>
+
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/switch_auto_sync"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="true" />
+            </LinearLayout>
+
+            <!-- 手动发送区（关闭自动同步时浮现） -->
+            <LinearLayout
+                android:id="@+id/card_manual_sync"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:layout_marginTop="10dp"
+                android:visibility="gone">
 
                 <Button
                     android:id="@+id/btn_test_send"
                     android:layout_width="match_parent"
-                    android:layout_height="42dp"
-                    android:layout_marginTop="10dp"
-                    android:text="一键发送剪贴板到电脑"
+                    android:layout_height="40dp"
+                    android:text="发送当前手机剪贴板到电脑"
+                    android:textAllCaps="false"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/surface_recessed"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="12dp" />
+
+            <!-- 特权守护状态条目（展示 Shizuku 直连或 ClipShellDaemon 独立存活） -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:paddingEnd="8dp">
+
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Shell 剪贴板守护"
+                            android:textSize="14sp"
+                            android:fontFamily="sans-serif-medium"
+                            android:textColor="@color/text_primary" />
+
+                        <TextView
+                            android:id="@+id/tv_shizuku_badge"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="检测中"
+                            android:textSize="11sp"
+                            android:fontFamily="sans-serif-medium"
+                            android:textColor="@color/text_secondary" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/tv_shizuku_desc"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:text="启动一次 Shizuku 即可驻留 UID 2000 守护进程，离开 Wi-Fi 亦不断连"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btn_shizuku_auth"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:minHeight="36dp"
+                    android:minWidth="76dp"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:text="去授权"
+                    android:textSize="12sp"
                     android:textAllCaps="false" />
             </LinearLayout>
-        </androidx.cardview.widget.CardView>
 
-        <!-- 3. 功能与系统设置卡片（规范化设置项列表） -->
-        <androidx.cardview.widget.CardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            app:cardCornerRadius="16dp"
-            app:cardElevation="1dp"
-            app:cardBackgroundColor="@color/card_bg"
-            android:layout_marginBottom="12dp">
-
+            <!-- 读写链路自检折叠详情 -->
             <LinearLayout
+                android:id="@+id/ll_shizuku_debug_container"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="16dp">
+                android:background="@drawable/bg_recessed_box"
+                android:padding="10dp"
+                android:layout_marginTop="10dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="底层读写链路自检报告"
+                        android:textSize="12sp"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="@color/text_primary" />
+
+                    <TextView
+                        android:id="@+id/tv_collapse_debug"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="收起"
+                        android:textSize="12sp"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="@color/primary"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="4dp" />
+                </LinearLayout>
 
                 <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="功能与系统设置"
-                    android:textSize="16sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/text_primary" />
-
-                <!-- 自动互传模式开关 -->
-                <LinearLayout
+                    android:id="@+id/tv_shizuku_debug"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:layout_marginTop="12dp">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="自动互传模式"
-                            android:textSize="14sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="复制内容后秒级静默同步至电脑"
-                            android:textSize="12sp"
-                            android:textColor="@color/text_secondary" />
-                    </LinearLayout>
-
-                    <androidx.appcompat.widget.SwitchCompat
-                        android:id="@+id/switch_auto_sync"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:checked="true" />
-                </LinearLayout>
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:background="#F1F5F9"
-                    android:layout_marginTop="10dp"
-                    android:layout_marginBottom="10dp" />
-
-                <!-- 多任务卡片加锁指引 (防一键清理误杀) -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="多任务卡片加锁 (防误杀推荐)"
-                            android:textSize="14sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="在多任务界面下拉或长按卡片加锁，免疫一键清理"
-                            android:textSize="12sp"
-                            android:textColor="@color/text_secondary" />
-                    </LinearLayout>
-
-                    <Button
-                        android:id="@+id/btn_lock_task_guide"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:minHeight="38dp"
-                        android:minWidth="76dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
-                        android:text="查看指引"
-                        android:textSize="12sp"
-                        android:textAllCaps="false" />
-                </LinearLayout>
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:background="#F1F5F9"
-                    android:layout_marginTop="10dp"
-                    android:layout_marginBottom="10dp" />
-
-                <!-- 最近任务中隐藏 (参考 GKD 原理防误关) -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="最近任务隐藏 (防误关)"
-                            android:textSize="14sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="在多任务视图中隐身，彻底免疫一键清理误杀"
-                            android:textSize="12sp"
-                            android:textColor="@color/text_secondary" />
-                    </LinearLayout>
-
-                    <androidx.appcompat.widget.SwitchCompat
-                        android:id="@+id/switch_hide_recents"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:checked="false" />
-                </LinearLayout>
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:background="#F1F5F9"
-                    android:layout_marginTop="10dp"
-                    android:layout_marginBottom="10dp" />
-
-                <!-- 通知栏静默指引入口 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="常驻通知静默与隐藏"
-                            android:textSize="14sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="通知级别已降为极小。可直达系统关闭展示，不降保活"
-                            android:textSize="12sp"
-                            android:textColor="@color/text_secondary" />
-                    </LinearLayout>
-
-                    <Button
-                        android:id="@+id/btn_silence_notification"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:minHeight="38dp"
-                        android:minWidth="76dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
-                        android:text="去关闭"
-                        android:textSize="12sp"
-                        android:textAllCaps="false" />
-                </LinearLayout>
+                    android:layout_marginTop="4dp"
+                    android:fontFamily="monospace"
+                    android:text="状态正常"
+                    android:textSize="11sp"
+                    android:textColor="@color/text_secondary" />
             </LinearLayout>
-        </androidx.cardview.widget.CardView>
 
-        <!-- 4. 系统特权与省电策略健康度 -->
-        <androidx.cardview.widget.CardView
+            <Button
+                android:id="@+id/btn_clipboard_perm"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- 3. 折叠抽屉 A：后台防杀与系统权限设置（低频配置默认折叠） -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            app:cardCornerRadius="16dp"
-            app:cardElevation="1dp"
-            app:cardBackgroundColor="@color/card_bg"
-            android:layout_marginBottom="12dp">
+            android:orientation="vertical"
+            android:background="@drawable/bg_drawer_card"
+            android:padding="15dp"
+            android:layout_marginBottom="10dp">
 
             <LinearLayout
+                android:id="@+id/ll_keepalive_header"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="?attr/selectableItemBackground">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="后台驻留与防误杀设置"
+                        android:textSize="14sp"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="@color/text_primary" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="省电无限制、自启动、多任务隐藏与常驻通知开关"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_muted" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tv_keepalive_toggle_arrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="展开"
+                    android:textSize="12sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/primary"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="4dp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/ll_keepalive_content"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="系统特权与省电策略"
-                    android:textSize="16sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/text_primary" />
-
-                <!-- 4.1 Shizuku 特权条目 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:layout_marginTop="12dp">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <LinearLayout
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal"
-                            android:gravity="center_vertical">
-
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Shizuku 系统特权"
-                                android:textSize="14sp"
-                                android:textStyle="bold"
-                                android:textColor="@color/text_primary" />
-
-                            <TextView
-                                android:id="@+id/tv_shizuku_badge"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="8dp"
-                                android:text="检查中..."
-                                android:textSize="11sp"
-                                android:textStyle="bold"
-                                android:textColor="@color/text_secondary" />
-                        </LinearLayout>
-
-                        <TextView
-                            android:id="@+id/tv_shizuku_desc"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="底层剪贴板监听，实现 100% 后台静默互传"
-                            android:textSize="12sp"
-                            android:textColor="@color/text_secondary" />
-                    </LinearLayout>
-
-                    <Button
-                        android:id="@+id/btn_shizuku_auth"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:minHeight="38dp"
-                        android:minWidth="76dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
-                        android:text="去授权"
-                        android:textSize="12sp"
-                        android:textAllCaps="false" />
-                </LinearLayout>
+                android:layout_marginTop="12dp"
+                android:visibility="gone">
 
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
-                    android:background="#F1F5F9"
-                    android:layout_marginTop="10dp"
+                    android:background="@color/surface_recessed"
                     android:layout_marginBottom="10dp" />
 
-                <!-- 4.2 后台省电策略条目 -->
+                <!-- 后台省电策略 -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -575,27 +529,26 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:text="后台省电策略"
-                            android:textSize="14sp"
-                            android:textStyle="bold"
+                            android:textSize="13sp"
+                            android:fontFamily="sans-serif-medium"
                             android:textColor="@color/text_primary" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="需设为无限制，防止被系统休眠误杀"
-                            android:textSize="12sp"
+                            android:text="设为无限制，防止息屏后系统冻结网络"
+                            android:textSize="11sp"
                             android:textColor="@color/text_secondary" />
                     </LinearLayout>
 
                     <Button
                         android:id="@+id/btn_battery_perm"
                         android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:minHeight="38dp"
-                        android:minWidth="76dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
+                        android:layout_height="34dp"
+                        android:minHeight="34dp"
+                        android:minWidth="72dp"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
                         android:text="去设置"
                         android:textSize="12sp"
                         android:textAllCaps="false" />
@@ -604,11 +557,11 @@
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
-                    android:background="#F1F5F9"
+                    android:background="@color/surface_recessed"
                     android:layout_marginTop="10dp"
                     android:layout_marginBottom="10dp" />
 
-                <!-- 4.3 系统自启动与后台复活权限条目 -->
+                <!-- 系统自启动权限 -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -624,120 +577,239 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="系统自启动与后台复活权限"
-                            android:textSize="14sp"
-                            android:textStyle="bold"
+                            android:text="系统自启动与后台拉起"
+                            android:textSize="13sp"
+                            android:fontFamily="sans-serif-medium"
                             android:textColor="@color/text_primary" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="需在系统安全中心允许自启，防止后台被杀后无法自动复活"
-                            android:textSize="12sp"
+                            android:text="允许开机与后台自启，配合 Shell 守护自动拉活"
+                            android:textSize="11sp"
                             android:textColor="@color/text_secondary" />
                     </LinearLayout>
 
                     <Button
                         android:id="@+id/btn_autostart_perm"
                         android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:minHeight="38dp"
-                        android:minWidth="76dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
+                        android:layout_height="34dp"
+                        android:minHeight="34dp"
+                        android:minWidth="72dp"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
                         android:text="去设置"
                         android:textSize="12sp"
                         android:textAllCaps="false" />
                 </LinearLayout>
 
-                <!-- 自检详情面板 (包含 > 收起 按钮与自动收起逻辑) -->
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/surface_recessed"
+                    android:layout_marginTop="10dp"
+                    android:layout_marginBottom="10dp" />
+
+                <!-- 多任务卡片加锁指引 -->
                 <LinearLayout
-                    android:id="@+id/ll_shizuku_debug_container"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:background="#F8FAFC"
-                    android:padding="10dp"
-                    android:layout_marginTop="10dp"
-                    android:visibility="gone">
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
 
                     <LinearLayout
-                        android:layout_width="match_parent"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical">
+                        android:layout_weight="1"
+                        android:orientation="vertical">
 
                         <TextView
-                            android:layout_width="0dp"
+                            android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="🔍 链路自检详情"
-                            android:textSize="12sp"
-                            android:textStyle="bold"
+                            android:text="多任务卡片加锁指引"
+                            android:textSize="13sp"
+                            android:fontFamily="sans-serif-medium"
                             android:textColor="@color/text_primary" />
 
                         <TextView
-                            android:id="@+id/tv_collapse_debug"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="> 收起"
-                            android:textSize="12sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/primary"
-                            android:paddingStart="8dp"
-                            android:paddingEnd="4dp"
-                            android:paddingTop="2dp"
-                            android:paddingBottom="2dp" />
+                            android:text="在最近任务界面下拉或长按卡片加锁"
+                            android:textSize="11sp"
+                            android:textColor="@color/text_secondary" />
                     </LinearLayout>
 
-                    <TextView
-                        android:id="@+id/tv_shizuku_debug"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:text="状态正常"
-                        android:textSize="11sp"
-                        android:textColor="@color/text_secondary" />
+                    <Button
+                        android:id="@+id/btn_lock_task_guide"
+                        android:layout_width="wrap_content"
+                        android:layout_height="34dp"
+                        android:minHeight="34dp"
+                        android:minWidth="72dp"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:text="查看指引"
+                        android:textSize="12sp"
+                        android:textAllCaps="false" />
                 </LinearLayout>
 
-                <!-- 隐藏的兼容按钮以保证旧绑定不报错 -->
-                <Button
-                    android:id="@+id/btn_clipboard_perm"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:visibility="gone" />
-            </LinearLayout>
-        </androidx.cardview.widget.CardView>
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/surface_recessed"
+                    android:layout_marginTop="10dp"
+                    android:layout_marginBottom="10dp" />
 
-        <!-- 5. 底部轻量诊断与日志工具 -->
-        <androidx.cardview.widget.CardView
+                <!-- 最近任务隐藏 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="在最近任务列表中隐藏"
+                            android:textSize="13sp"
+                            android:fontFamily="sans-serif-medium"
+                            android:textColor="@color/text_primary" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="退回桌面后从多任务列表隐身，避免一键清理误关"
+                            android:textSize="11sp"
+                            android:textColor="@color/text_secondary" />
+                    </LinearLayout>
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/switch_hide_recents"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="false" />
+                </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/surface_recessed"
+                    android:layout_marginTop="10dp"
+                    android:layout_marginBottom="10dp" />
+
+                <!-- 常驻通知隐藏 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="常驻通知静默与隐藏"
+                            android:textSize="13sp"
+                            android:fontFamily="sans-serif-medium"
+                            android:textColor="@color/text_primary" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="隐藏通知栏常驻提示，不影响后台服务运行"
+                            android:textSize="11sp"
+                            android:textColor="@color/text_secondary" />
+                    </LinearLayout>
+
+                    <Button
+                        android:id="@+id/btn_silence_notification"
+                        android:layout_width="wrap_content"
+                        android:layout_height="34dp"
+                        android:minHeight="34dp"
+                        android:minWidth="72dp"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:text="去关闭"
+                        android:textSize="12sp"
+                        android:textAllCaps="false" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- 4. 折叠抽屉 B：运行日志与诊断工具 -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            app:cardCornerRadius="16dp"
-            app:cardElevation="1dp"
-            app:cardBackgroundColor="@color/card_bg"
-            android:layout_marginBottom="16dp">
+            android:orientation="vertical"
+            android:background="@drawable/bg_drawer_card"
+            android:padding="15dp">
 
             <LinearLayout
+                android:id="@+id/ll_logs_header"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="?attr/selectableItemBackground">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="运行日志与诊断工具"
+                        android:textSize="14sp"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="@color/text_primary" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="查看实时网络重连、密文握手与剪贴板守护日志"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_muted" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tv_logs_toggle_arrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="展开"
+                    android:textSize="12sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/primary"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="4dp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/ll_logs_content"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="诊断与排查工具"
-                    android:textSize="14sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/text_primary" />
+                android:layout_marginTop="10dp"
+                android:visibility="gone">
 
                 <TextView
                     android:id="@+id/tv_log_file_path"
-                    android:layout_width="wrap_content"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
+                    android:fontFamily="monospace"
                     android:text="日志文档就绪"
                     android:textSize="11sp"
                     android:textColor="@color/text_muted" />
@@ -751,7 +823,7 @@
                     <Button
                         android:id="@+id/btn_view_logs"
                         android:layout_width="0dp"
-                        android:layout_height="wrap_content"
+                        android:layout_height="36dp"
                         android:minHeight="36dp"
                         android:layout_weight="1"
                         android:paddingStart="2dp"
@@ -763,7 +835,7 @@
                     <Button
                         android:id="@+id/btn_copy_logs"
                         android:layout_width="0dp"
-                        android:layout_height="wrap_content"
+                        android:layout_height="36dp"
                         android:minHeight="36dp"
                         android:layout_weight="1"
                         android:layout_marginStart="6dp"
@@ -776,7 +848,7 @@
                     <Button
                         android:id="@+id/btn_export_logs"
                         android:layout_width="0dp"
-                        android:layout_height="wrap_content"
+                        android:layout_height="36dp"
                         android:minHeight="36dp"
                         android:layout_weight="1"
                         android:layout_marginStart="6dp"
@@ -789,7 +861,7 @@
                     <Button
                         android:id="@+id/btn_clear_logs"
                         android:layout_width="0dp"
-                        android:layout_height="wrap_content"
+                        android:layout_height="36dp"
                         android:minHeight="36dp"
                         android:layout_weight="1"
                         android:layout_marginStart="6dp"
@@ -800,8 +872,6 @@
                         android:textAllCaps="false" />
                 </LinearLayout>
             </LinearLayout>
-        </androidx.cardview.widget.CardView>
-
+        </LinearLayout>
     </LinearLayout>
 </ScrollView>
-

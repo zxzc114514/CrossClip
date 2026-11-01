@@ -53,7 +53,11 @@ pub fn set_clipboard_text(text: &str) -> bool {
         if !ptr.is_null() {
             std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
             GlobalUnlock(h_mem);
-            SetClipboardData(CF_UNICODETEXT, h_mem as HANDLE);
+            if SetClipboardData(CF_UNICODETEXT, h_mem as HANDLE).is_null() {
+                GlobalFree(h_mem);
+            }
+        } else {
+            GlobalFree(h_mem);
         }
 
         CloseClipboard();

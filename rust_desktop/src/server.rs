@@ -46,15 +46,8 @@ pub struct ClientPeer {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct AuthRequest {
     auth_cipher: Option<String>,
-    pin: Option<String>,
-    pin_hash: Option<String>,
-    client_port: Option<u16>,
-    device_id: Option<String>,
-    device_name: Option<String>,
-    timestamp: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -66,28 +59,37 @@ struct AuthChallengePayload {
 }
 
 #[derive(Deserialize)]
-struct HeartbeatRequest {
-    pin_hash: Option<String>,
-    client_port: Option<u16>,
-    device_id: Option<String>,
-    device_name: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
 struct SyncRequest {
     encrypted: String,
     hash: String,
     sender_id: Option<String>,
-    timestamp: Option<u64>,
 }
 
-fn extract_pin_from_query(url: &str) -> Option<String> {
-    let query = url.split_once('?')?.1;
-    for pair in query.split('&') {
-        let mut parts = pair.splitn(2, '=');
-        if parts.next() == Some("pin") {
-            return parts.next().map(|v| v.to_string());
+/// 统一验证 AES-256-GCM 密文挑战令牌（带 5 分钟防重放时间窗校验）
+fn verify_auth_cipher(cipher_b64: &str, current_pin: &str) -> Option<AuthChallengePayload> {
+    if cipher_b64.trim().is_empty() || current_pin.trim().is_empty() {
+        return None;
+    }
+    let decrypted = crate::crypto::decrypt(cipher_b64.trim(), current_pin.trim()).ok()?;
+    let payload: AuthChallengePayload = serde_json::from_str(&decrypted).ok()?;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    if now_ms.abs_diff(payload.timestamp) <= 300_000 {
+        Some(payload)
+    } else {
+        None
+    }
+}
+
+fn extract_auth_cipher_from_request(request: &Request) -> Option<String> {
+    for header in request.headers() {
+        if header.field.equiv("X-Auth-Cipher") {
+            let val = header.value.as_str().trim();
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
         }
     }
     None
@@ -115,6 +117,12 @@ impl Broadcaster {
         &self.device_id
     }
 
+    pub fn has_active_clients(&self) -> bool {
+        let mut clients = self.clients.lock().unwrap();
+        clients.retain(|client| client.send(": keepalive\n\n".to_string()).is_ok());
+        !clients.is_empty()
+    }
+
     pub fn new(pin_code: Arc<RwLock<String>>, device_id: String) -> Self {
         let broadcaster = Self {
             clients: Arc::new(Mutex::new(Vec::new())),
@@ -126,7 +134,8 @@ impl Broadcaster {
         let peers_clone = broadcaster.peers.clone();
         let clients_clone = broadcaster.clients.clone();
         std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(30));
+            // 每 15 秒下发一次 SSE 保活帧，配合手机端 25 秒读超时实现快速断线感知
+            std::thread::sleep(Duration::from_secs(15));
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -146,6 +155,9 @@ impl Broadcaster {
     }
 
     pub fn register_peer(&self, ip: String, port: u16, device_id: String, device_name: String) {
+        if !ip.starts_with("127.") {
+            crate::config::update_persisted_phone_ip(&ip);
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -199,7 +211,7 @@ impl Broadcaster {
                 clients.retain(|client| client.send(msg.clone()).is_ok());
             }
 
-            // 2. 异步向局域网已注册的对等节点做 HTTP POST 兜底通知，不阻塞主流程
+            // 2. 异步向局域网已鉴权的对等节点做 HTTP POST 兜底通知
             let peers: Vec<ClientPeer> = self.peers.read().unwrap().clone();
             if !peers.is_empty() {
                 std::thread::spawn(move || {
@@ -229,9 +241,9 @@ fn send_raw_http_post(ip: &str, port: u16, path: &str, json_body: &str) -> bool 
         Err(_) => return false,
     };
 
-    if let Ok(mut stream) = TcpStream::connect_timeout(&socket_addr, Duration::from_millis(2000)) {
-        let _ = stream.set_write_timeout(Some(Duration::from_millis(2000)));
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(2000)));
+    if let Ok(mut stream) = TcpStream::connect_timeout(&socket_addr, Duration::from_millis(1200)) {
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(1200)));
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(1200)));
         let body_bytes = json_body.as_bytes();
         let request = format!(
             "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -247,6 +259,46 @@ fn send_raw_http_post(ip: &str, port: u16, path: &str, json_body: &str) -> bool 
     false
 }
 
+fn start_phone_wake_daemon(http_port: u16, device_id: String, device_name: String, broadcaster: Broadcaster) {
+    std::thread::spawn(move || {
+        // 开机初始密集唤醒阶段：前 15 秒每 3 秒单播一次，迅速叫醒手机
+        for _ in 0..5 {
+            send_wakeup_to_saved_phone(http_port, &device_id, &device_name);
+            std::thread::sleep(Duration::from_secs(3));
+        }
+
+        // 动态自适应阶段：若当前无活跃 SSE 连接（如手机刚离开局域网或正返回局域网），每 8 秒探测唤醒一次；
+        // 若手机已稳定连接，则每 45 秒低频探测一次
+        loop {
+            let sleep_secs = if broadcaster.has_active_clients() { 45 } else { 8 };
+            std::thread::sleep(Duration::from_secs(sleep_secs));
+            if !broadcaster.has_active_clients() {
+                send_wakeup_to_saved_phone(http_port, &device_id, &device_name);
+            }
+        }
+    });
+}
+
+fn send_wakeup_to_saved_phone(http_port: u16, device_id: &str, device_name: &str) {
+    let cfg = crate::config::load_or_init_config();
+    if let Some(ref phone_ip) = cfg.last_phone_ip {
+        if !phone_ip.is_empty() && !phone_ip.starts_with("127.") {
+            let lan_ips = crate::ip_util::get_local_lan_ips();
+            let main_ip = lan_ips.first().cloned().unwrap_or_else(|| "127.0.0.1".to_string());
+            let payload = serde_json::json!({
+                "type": "WAKEUP",
+                "pc_ip": main_ip,
+                "pc_port": http_port,
+                "device_id": device_id,
+                "device_name": device_name
+            })
+            .to_string();
+
+            let _ = send_raw_http_post(phone_ip, 18237, "/wakeup", &payload);
+        }
+    }
+}
+
 pub fn start_http_server(
     port: u16,
     pin_code: Arc<RwLock<String>>,
@@ -254,6 +306,13 @@ pub fn start_http_server(
     broadcaster: Broadcaster,
     on_text_received: Arc<dyn Fn(String, String) + Send + Sync + 'static>,
 ) {
+    start_phone_wake_daemon(
+        port,
+        broadcaster.device_id().to_string(),
+        device_name.clone(),
+        broadcaster.clone(),
+    );
+
     std::thread::spawn(move || {
         let addr = format!("0.0.0.0:{}", port);
         let server = match Server::http(&addr) {
@@ -273,7 +332,6 @@ pub fn start_http_server(
             let on_received_clone = on_text_received.clone();
 
             if request.url().starts_with("/events") {
-                // SSE 长连接会持久阻塞在读取循环，使用独立线程处理，绝不耗尽普通 API 线程池
                 std::thread::spawn(move || {
                     handle_client_request(
                         request,
@@ -308,7 +366,7 @@ fn handle_client_request(
     let cors_header = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap();
     let cors_headers_allow = Header::from_bytes(
         &b"Access-Control-Allow-Headers"[..],
-        &b"Content-Type, Accept, Authorization"[..],
+        &b"Content-Type, Accept, Authorization, X-Auth-Cipher"[..],
     )
     .unwrap();
     let content_type = Header::from_bytes(
@@ -354,38 +412,42 @@ fn handle_client_request(
     if path == "/heartbeat" && method == Method::Post {
         let mut body = String::new();
         if request.as_reader().read_to_string(&mut body).is_ok() {
-            if let Ok(req) = serde_json::from_str::<HeartbeatRequest>(&body) {
+            if let Ok(req) = serde_json::from_str::<AuthRequest>(&body) {
                 let current_pin = pin_code.read().unwrap().clone();
-                let my_hash = crate::crypto::compute_hash(&current_pin);
-                let my_hash_prefix = &my_hash[..16.min(my_hash.len())];
-                if req.pin_hash.as_deref() == Some(my_hash_prefix) {
-                    let port = req.client_port.unwrap_or(18237);
-                    let dev_id = req.device_id.unwrap_or_default();
-                    let dev_name = req.device_name.unwrap_or_default();
-                    broadcaster.register_peer(client_ip, port, dev_id, dev_name);
-                    let resp = Response::from_string(r#"{"status":"ok"}"#)
-                        .with_header(cors_header)
-                        .with_header(content_type);
-                    let _ = request.respond(resp);
-                    return;
+                if let Some(ref cipher) = req.auth_cipher {
+                    if let Some(payload) = verify_auth_cipher(cipher, &current_pin) {
+                        let port = payload.client_port.unwrap_or(18237);
+                        let dev_id = payload.device_id.unwrap_or_default();
+                        let dev_name = payload.device_name.unwrap_or_default();
+                        broadcaster.register_peer(client_ip, port, dev_id, dev_name);
+                        let resp = Response::from_string(r#"{"status":"ok"}"#)
+                            .with_header(cors_header)
+                            .with_header(content_type);
+                        let _ = request.respond(resp);
+                        return;
+                    }
                 }
             }
         }
-        let resp = Response::from_string(r#"{"status":"error"}"#)
+        let resp = Response::from_string(r#"{"status":"error","message":"pin_mismatch"}"#)
             .with_status_code(StatusCode(403))
-            .with_header(cors_header);
+            .with_header(cors_header)
+            .with_header(content_type);
         let _ = request.respond(resp);
         return;
     }
 
     if path == "/events" && method == Method::Get {
         let current_pin = pin_code.read().unwrap().clone();
-        let query_pin = extract_pin_from_query(&url).unwrap_or_default();
-        if query_pin.trim() != current_pin.trim() {
+        let auth_cipher = extract_auth_cipher_from_request(&request).unwrap_or_default();
+        let verified_payload = verify_auth_cipher(&auth_cipher, &current_pin);
+
+        if verified_payload.is_none() {
             let resp_data = serde_json::to_string(&StatusResponse {
                 status: "error".to_string(),
                 auth: Some(false),
                 device_name: None,
+                device_id: None,
                 message: Some("pin_mismatch".to_string()),
             })
             .unwrap();
@@ -397,7 +459,13 @@ fn handle_client_request(
             return;
         }
 
-        broadcaster.register_peer(client_ip, 18237, "android_phone".to_string(), "安卓手机".to_string());
+        let payload = verified_payload.unwrap();
+        broadcaster.register_peer(
+            client_ip,
+            payload.client_port.unwrap_or(18237),
+            payload.device_id.unwrap_or_else(|| "android_phone".to_string()),
+            payload.device_name.unwrap_or_else(|| "安卓手机".to_string()),
+        );
 
         let (tx, rx) = channel::<String>();
         {
@@ -430,66 +498,19 @@ fn handle_client_request(
         let mut body = String::new();
         if request.as_reader().read_to_string(&mut body).is_ok() {
             let auth_req: Result<AuthRequest, _> = serde_json::from_str(&body);
-            let mut is_valid = false;
             let current_pin = pin_code.read().unwrap().clone();
 
-            let mut client_port = 18237;
-            let mut dev_id = "android_phone".to_string();
-            let mut dev_name = "安卓手机".to_string();
-
+            let mut verified: Option<AuthChallengePayload> = None;
             if let Ok(req) = auth_req {
-                let now_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-
-                if let Some(cipher) = req.auth_cipher {
-                    if let Ok(decrypted) = crate::crypto::decrypt(&cipher, &current_pin) {
-                        if let Ok(payload) = serde_json::from_str::<AuthChallengePayload>(&decrypted) {
-                            let time_diff = now_ms.abs_diff(payload.timestamp);
-                            if time_diff < 60_000 {
-                                is_valid = true;
-                                if let Some(p) = payload.client_port {
-                                    client_port = p;
-                                }
-                                if let Some(id) = payload.device_id {
-                                    dev_id = id;
-                                }
-                                if let Some(name) = payload.device_name {
-                                    dev_name = name;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if !is_valid {
-                    let my_hash = crate::crypto::compute_hash(&current_pin);
-                    let my_hash_prefix = &my_hash[..16.min(my_hash.len())];
-
-                    if let Some(pin) = req.pin {
-                        if pin.trim() == current_pin.trim() {
-                            is_valid = true;
-                        }
-                    }
-                    if let Some(hash) = req.pin_hash {
-                        if hash == my_hash_prefix {
-                            is_valid = true;
-                        }
-                    }
-                    if let Some(p) = req.client_port {
-                        client_port = p;
-                    }
-                    if let Some(id) = req.device_id {
-                        dev_id = id;
-                    }
-                    if let Some(name) = req.device_name {
-                        dev_name = name;
-                    }
+                if let Some(ref cipher) = req.auth_cipher {
+                    verified = verify_auth_cipher(cipher, &current_pin);
                 }
             }
 
-            if is_valid {
+            if let Some(payload) = verified {
+                let client_port = payload.client_port.unwrap_or(18237);
+                let dev_id = payload.device_id.unwrap_or_else(|| "android_phone".to_string());
+                let dev_name = payload.device_name.unwrap_or_else(|| "安卓手机".to_string());
                 broadcaster.register_peer(client_ip, client_port, dev_id, dev_name);
 
                 let resp_data = serde_json::to_string(&StatusResponse {
@@ -509,6 +530,7 @@ fn handle_client_request(
                     status: "error".to_string(),
                     auth: Some(false),
                     device_name: None,
+                    device_id: None,
                     message: Some("pin_mismatch".to_string()),
                 })
                 .unwrap();
@@ -529,7 +551,12 @@ fn handle_client_request(
                 let current_pin = pin_code.read().unwrap().clone();
                 if let Ok(decrypted) = crate::crypto::decrypt(&sync_req.encrypted, &current_pin) {
                     if crate::crypto::compute_hash(&decrypted) == sync_req.hash {
-                        broadcaster.register_peer(client_ip, 18237, "android_phone".to_string(), "安卓手机".to_string());
+                        broadcaster.register_peer(
+                            client_ip,
+                            18237,
+                            "android_phone".to_string(),
+                            "安卓手机".to_string(),
+                        );
 
                         crate::clipboard::set_clipboard_text(&decrypted);
 

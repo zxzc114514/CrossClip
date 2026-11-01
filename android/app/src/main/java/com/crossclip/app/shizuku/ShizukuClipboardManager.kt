@@ -66,8 +66,29 @@ object ShizukuClipboardManager {
 
     private var internalListenerBinder: IBinder? = null
     private var pollExecutor: ScheduledExecutorService? = null
+    private val binderListenersRegistered = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
+        DebugLogger.log("Shizuku", "收到 Shizuku Binder 恢复通知")
+        appContext?.let { ctx ->
+            if (isShizukuBinderReady()) {
+                ShizukuPrivilegeHelper.applySystemWhitelists(ctx, force = true)
+                tryRegisterListener()
+            }
+        }
+    }
+
+    private val binderDeadListener = Shizuku.OnBinderDeadListener {
+        DebugLogger.log("Shizuku", "Shizuku Binder 已断开，复位监听状态并无缝切换至独立 ClipShellDaemon 守护")
+        primaryClipListenerRegistered = false
+        internalListenerBinder = null
+        val cb = pollCallback ?: onChangeListener
+        if (cb != null) {
+            startPolling(cb)
+        }
+    }
 
     private data class InvocationPlan(
         val declaringClass: Class<*>,
@@ -81,7 +102,7 @@ object ShizukuClipboardManager {
     private val retryRunnable = object : Runnable {
         override fun run() {
             if (onChangeListener == null || primaryClipListenerRegistered) return
-            if (isReady()) {
+            if (isShizukuBinderReady()) {
                 tryRegisterListener()
             }
             if (!primaryClipListenerRegistered && onChangeListener != null) {
@@ -91,28 +112,60 @@ object ShizukuClipboardManager {
     }
 
     fun init(context: Context) {
-        appContext = context.applicationContext
-        DebugLogger.init(context.applicationContext)
-        if (isReady()) {
-            ShizukuPrivilegeHelper.applySystemWhitelists(context.applicationContext)
+        val ctx = context.applicationContext
+        appContext = ctx
+        DebugLogger.init(ctx)
+        if (binderListenersRegistered.compareAndSet(false, true)) {
+            try {
+                Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
+                Shizuku.addBinderDeadListener(binderDeadListener)
+            } catch (_: Throwable) {}
+        }
+        if (isShizukuBinderReady()) {
+            ShizukuPrivilegeHelper.applySystemWhitelists(ctx)
         }
     }
 
     /**
-     * 获取当前 Shizuku 运行与授权状态
+     * 检查 Shizuku 进程本身是否在线且已向本应用授权
+     */
+    fun isShizukuBinderReady(): Boolean {
+        return try {
+            Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * 是否处于“Shizuku 自身已关机休眠，但独立 UID 2000 守护进程 ClipShellDaemon 仍在线工作”状态
+     */
+    fun isDaemonAliveOnly(): Boolean {
+        return !isShizukuBinderReady() && ShizukuPrivilegeHelper.isShellDaemonAlive()
+    }
+
+    /**
+     * 获取当前特权剪贴板引擎状态（含 Shizuku 直连与 ClipShellDaemon 独立存活双通道）
      */
     fun getState(): State {
         return try {
-            if (!Shizuku.pingBinder()) {
-                State.NOT_RUNNING
-            } else if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+            if (Shizuku.pingBinder()) {
+                if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                    State.READY
+                } else {
+                    State.UNAUTHORIZED
+                }
+            } else if (ShizukuPrivilegeHelper.isShellDaemonAlive()) {
                 State.READY
             } else {
-                State.UNAUTHORIZED
+                State.NOT_RUNNING
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "检查 Shizuku 状态异常: ${e.message}")
-            State.NOT_RUNNING
+            if (ShizukuPrivilegeHelper.isShellDaemonAlive()) {
+                State.READY
+            } else {
+                State.NOT_RUNNING
+            }
         }
     }
 
@@ -237,7 +290,7 @@ object ShizukuClipboardManager {
      */
     @Synchronized
     private fun getIClipboard(): Pair<Class<*>, Any>? {
-        if (!isReady()) return null
+        if (!isShizukuBinderReady()) return null
         return try {
             val rawBinder = SystemServiceHelper.getSystemService("clipboard")
             if (rawBinder == null) {
@@ -318,103 +371,118 @@ object ShizukuClipboardManager {
     }
 
     /**
-     * 通过 Shizuku Shell 特权静默写入剪贴板。
-     * 写入后会回读校验，只有一致才返回 true，避免“假成功”跳过前台兜底。
+     * 通过 Shell 特权（优先 Shizuku Binder 直连，次选独立存活的 ClipShellDaemon）静默写入剪贴板。
+     * 每次写入后强制执行回读校验，只有回读内容与目标文本完全一致才返回 true，彻底杜绝假成功。
      */
     fun writeClipboard(text: String): Boolean {
         if (text.isEmpty()) return false
-        val pair = getIClipboard() ?: return false
-        val (invokeClass, proxy) = pair
+        val targetHash = CryptoUtil.computeHash(text)
 
-        return try {
-            val clipData = ClipData.newPlainText("CrossClip", text)
-            val plans = getInvocationPlans(invokeClass, proxy, METHOD_SET)
-            var lastError: Throwable? = null
+        // 通道 A：若 Shizuku Binder 在线，尝试直连写入并执行真实回读校验
+        val pair = getIClipboard()
+        if (pair != null) {
+            val (invokeClass, proxy) = pair
+            try {
+                val clipData = ClipData.newPlainText("CrossClip", text)
+                val plans = getInvocationPlans(invokeClass, proxy, METHOD_SET)
 
-            for (plan in plans) {
-                try {
-                    invokePlannedMethod(plan, proxy, METHOD_SET, clipData, null)
-                    lastPolledHash = CryptoUtil.computeHash(text)
-                    Log.i(
-                        TAG,
-                        "通过 Shizuku 成功静默写入系统剪贴板 (长度: ${text.length}, 签名=${plan.signature})"
-                    )
-                    DebugLogger.log(
-                        "Shizuku",
-                        "后台写入成功 (长度 ${text.length}, 签名=${plan.signature})"
-                    )
-                    return true
-                } catch (e: Throwable) {
-                    lastError = e
-                    Log.w(
-                        TAG,
-                        "setPrimaryClip 候选调用失败 (签名=${plan.signature}): " +
-                            "${e.javaClass.simpleName}: ${e.message}"
-                    )
-                }
-            }
-
-            // 固定 AOSP 签名兜底
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                for (args in buildCommonArgs(METHOD_SET, clipData, null)) {
+                for (plan in plans) {
                     try {
-                        HiddenApiBypass.invoke(invokeClass, proxy, METHOD_SET, *args)
-                        lastPolledHash = CryptoUtil.computeHash(text)
-                        DebugLogger.log("Shizuku", "后台写入成功 (AOSP兜底)")
-                        return true
-                    } catch (e: Throwable) {
-                        lastError = e
+                        invokePlannedMethod(plan, proxy, METHOD_SET, clipData, null)
+                        val verified = readClipboardDirectFromProxy(invokeClass, proxy)
+                        if (verified == text) {
+                            lastPolledHash = targetHash
+                            DebugLogger.log(
+                                "Shizuku",
+                                "后台写入并回读校验成功 (长度 ${text.length}, 签名=${plan.signature})"
+                            )
+                            return true
+                        }
+                    } catch (_: Throwable) {}
+                }
+
+                // 固定 AOSP 签名兜底 + 回读校验
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    for (args in buildCommonArgs(METHOD_SET, clipData, null)) {
+                        try {
+                            HiddenApiBypass.invoke(invokeClass, proxy, METHOD_SET, *args)
+                            val verified = readClipboardDirectFromProxy(invokeClass, proxy)
+                            if (verified == text) {
+                                lastPolledHash = targetHash
+                                DebugLogger.log("Shizuku", "后台写入并回读校验成功 (AOSP兜底)")
+                                return true
+                            }
+                        } catch (_: Throwable) {}
                     }
                 }
+                invocationPlansCache.clear()
+            } catch (e: Throwable) {
+                invocationPlansCache.clear()
+                Log.w(TAG, "Shizuku 直连写入异常，切换至独立守护进程通道: ${e.message}")
             }
-
-            // 清除计划缓存以备下次调用自愈
-            invocationPlansCache.clear()
-
-            Log.e(
-                TAG,
-                "Shizuku 写入剪贴板失败 (最后异常: ${lastError?.message ?: "无"})"
-            )
-            DebugLogger.log("Shizuku", "写入失败: ${lastError?.javaClass?.simpleName}: ${lastError?.message}")
-            false
-        } catch (e: Throwable) {
-            invocationPlansCache.clear()
-            Log.e(TAG, "Shizuku 写入剪贴板失败: ${e.javaClass.simpleName}: ${e.message}")
-            false
         }
+
+        // 通道 B：通过独立存活的 ClipShellDaemon (UID 2000) 写入并回读校验
+        if (ShizukuPrivilegeHelper.writeClipboardViaDaemon(text)) {
+            lastPolledHash = targetHash
+            DebugLogger.log("Shizuku", "通过独立 ClipShellDaemon (UID 2000) 写入并校验成功 (长度 ${text.length})")
+            return true
+        }
+
+        DebugLogger.log("Shizuku", "特权通道写入剪贴板未通过回读校验")
+        return false
     }
 
-    /**
-     * 通过 Shizuku Shell 特权读取系统剪贴板内容。
-     */
-    fun readClipboard(): String? {
-        val pair = getIClipboard() ?: return null
-        val (invokeClass, proxy) = pair
-
+    private fun readClipboardDirectFromProxy(invokeClass: Class<*>, proxy: Any): String? {
         return try {
             val result = invokeIClipboardMethod(invokeClass, proxy, METHOD_GET, skipNullResult = true)
             if (result is ClipData && result.itemCount > 0) {
                 val item = result.getItemAt(0)
-                val text = item.text?.toString() ?: item.coerceToText(null)?.toString()
-                if (!text.isNullOrEmpty()) {
-                    DebugLogger.log("Shizuku", "后台读取成功 (长度 ${text.length})")
-                    return text
-                }
+                item.text?.toString() ?: item.coerceToText(null)?.toString()
+            } else {
+                null
             }
-            null
-        } catch (e: Throwable) {
-            Log.e(TAG, "Shizuku 读取剪贴板异常: ${e.javaClass.simpleName}: ${e.message}")
-            DebugLogger.log("Shizuku", "后台读取异常: ${e.javaClass.simpleName}: ${e.message}")
+        } catch (_: Throwable) {
             null
         }
     }
 
     /**
-     * 界面自检：完整走一遍 Shizuku 读取链路，并把设备真实方法签名带出来。
+     * 通过 Shell 特权（Shizuku Binder 直连或独立 ClipShellDaemon）读取系统剪贴板内容。
+     */
+    fun readClipboard(): String? {
+        val pair = getIClipboard()
+        if (pair != null) {
+            val (invokeClass, proxy) = pair
+            val text = readClipboardDirectFromProxy(invokeClass, proxy)
+            if (!text.isNullOrEmpty()) {
+                DebugLogger.log("Shizuku", "后台读取成功 (长度 ${text.length})")
+                return text
+            }
+        }
+
+        val daemonText = ShizukuPrivilegeHelper.readClipboardViaDaemon()
+        if (!daemonText.isNullOrEmpty()) {
+            DebugLogger.log("Shizuku", "通过独立 ClipShellDaemon 读取成功 (长度 ${daemonText.length})")
+            return daemonText
+        }
+        return null
+    }
+
+    /**
+     * 界面自检：完整走一遍特权读取链路，并把设备真实方法签名或独立守护状态带出来。
      */
     fun debugReadClipboard(): String {
         return try {
-            if (!isReady()) return "Shizuku 未授权或未运行"
+            if (!isReady()) return "特权未激活或未运行"
+            if (isDaemonAliveOnly()) {
+                val dText = ShizukuPrivilegeHelper.readClipboardViaDaemon()
+                return if (!dText.isNullOrEmpty()) {
+                    "独立守护 ClipShellDaemon (UID 2000) 在线，读取成功 (长度 ${dText.length})"
+                } else {
+                    "独立守护 ClipShellDaemon (UID 2000) 在线，当前剪贴板为空"
+                }
+            }
             val rawBinder = SystemServiceHelper.getSystemService("clipboard")
                 ?: return "无法获取系统 clipboard Binder"
             val wrappedBinder = ShizukuBinderWrapper(rawBinder)
@@ -445,10 +513,11 @@ object ShizukuClipboardManager {
      * 界面完整自检：先测读取，再写入一段标记文本并回读校验，最后恢复原剪贴板。
      */
     fun debugFullSelfTest(): String {
-        val listenerPart = if (isListenerRegistered()) {
-            "底层监听: 已注册"
-        } else {
-            "底层监听: 未注册（当前依赖每秒轮询）"
+        val daemonAlive = ShizukuPrivilegeHelper.isShellDaemonAlive(forceCheck = true)
+        val listenerPart = when {
+            isListenerRegistered() -> "底层监听: Shizuku 原生 Binder 已注册 | 独立守护: ${if (daemonAlive) "在线" else "未启动"}"
+            daemonAlive -> "底层监听: 独立 ClipShellDaemon (UID 2000) 守护在线"
+            else -> "底层监听: 未注册（当前依赖每秒轮询）"
         }
         val readPart = debugReadClipboard()
         val writePart = debugWriteClipboard()
@@ -460,7 +529,7 @@ object ShizukuClipboardManager {
      */
     fun debugWriteClipboard(): String {
         return try {
-            if (!isReady()) return "Shizuku 写入自检: 未授权或未运行"
+            if (!isReady()) return "写入自检: 未授权或未运行"
             val original = readClipboard()
             val marker = "CROSSCLIP_SELFTEST_" + System.currentTimeMillis()
 
@@ -474,7 +543,7 @@ object ShizukuClipboardManager {
             val restored = restoreClipboard(original)
 
             buildString {
-                append("Shizuku 写入自检:\n")
+                append("特权写入自检:\n")
                 append("  写入调用: ").append(if (writeOk == true) "成功" else "$writeOk").append("\n")
                 append("  回读校验: ").append(
                     if (verified == marker) "一致"
@@ -483,20 +552,23 @@ object ShizukuClipboardManager {
                 append("  恢复原剪贴板: ").append(if (restored) "成功" else "失败，请重新复制一次")
             }
         } catch (e: Throwable) {
-            "Shizuku 写入自检异常: ${e.javaClass.simpleName}: ${e.message}"
+            "特权写入自检异常: ${e.javaClass.simpleName}: ${e.message}"
         }
     }
 
     /**
-     * 直接走 Shizuku 调用 setPrimaryClip，不更新轮询哈希，供写入自检使用。
+     * 直接走特权通道调用 setPrimaryClip，供写入自检使用。
      */
     private fun invokeSetPrimaryClipDirect(text: String): Boolean {
         if (text.isEmpty()) return false
-        val pair = getIClipboard() ?: return false
-        val (invokeClass, proxy) = pair
-        val clipData = ClipData.newPlainText("CrossClip", text)
-        invokeIClipboardMethod(invokeClass, proxy, METHOD_SET, clipData = clipData)
-        return true
+        val pair = getIClipboard()
+        if (pair != null) {
+            val (invokeClass, proxy) = pair
+            val clipData = ClipData.newPlainText("CrossClip", text)
+            invokeIClipboardMethod(invokeClass, proxy, METHOD_SET, clipData = clipData)
+            return true
+        }
+        return ShizukuPrivilegeHelper.writeClipboardViaDaemon(text)
     }
 
     private fun restoreClipboard(text: String?): Boolean {

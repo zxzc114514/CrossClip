@@ -1,4 +1,4 @@
-﻿package com.crossclip.app.network
+package com.crossclip.app.network
 
 import android.util.Log
 import com.crossclip.app.util.DebugLogger
@@ -18,6 +18,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class LocalHttpServer(
     private val port: Int = 18237,
+    private val onWakeupReceived: ((remoteIp: String, pcIp: String, pcPort: Int, deviceId: String, deviceName: String) -> Unit)? = null,
+    private val onLocalDaemonClipReceived: ((text: String) -> Unit)? = null,
     private val onSyncReceived: (encrypted: String, hash: String, senderId: String) -> Unit
 ) {
     private val TAG = "LocalHttpServer"
@@ -122,6 +124,37 @@ class LocalHttpServer(
                     } catch (e: Exception) {
                         DebugLogger.log("LOCAL_HTTP", "解析电脑端推送 JSON 异常: ${e.message}")
                         sendResponse(outputStream, 400, "{\"error\":\"invalid_json\"}")
+                    }
+                }
+                path == "/wakeup" -> {
+                    try {
+                        val json = if (body.isNotEmpty()) JSONObject(body) else JSONObject()
+                        val reqPcIp = json.optString("pc_ip", "").ifEmpty { remoteIp }
+                        val reqPort = json.optInt("pc_port", 18236)
+                        val devId = json.optString("device_id", "")
+                        val devName = json.optString("device_name", "Windows 电脑")
+                        DebugLogger.log("LOCAL_HTTP", "收到电脑端主动唤醒请求: remote=$remoteIp, pcIp=$reqPcIp, port=$reqPort, id=$devId, name=$devName")
+                        onWakeupReceived?.invoke(remoteIp, reqPcIp, reqPort, devId, devName)
+                        sendResponse(outputStream, 200, "{\"status\":\"ok\",\"message\":\"awake\"}")
+                    } catch (e: Exception) {
+                        DebugLogger.log("LOCAL_HTTP", "处理 /wakeup 请求异常: ${e.message}")
+                        sendResponse(outputStream, 200, "{\"status\":\"ok\"}")
+                    }
+                }
+                path == "/local_clip" && method == "POST" -> {
+                    if (remoteIp == "127.0.0.1" || remoteIp == "::1" || remoteIp.startsWith("127.")) {
+                        try {
+                            val json = JSONObject(body)
+                            val text = json.optString("text", "")
+                            if (text.isNotEmpty()) {
+                                onLocalDaemonClipReceived?.invoke(text)
+                            }
+                            sendResponse(outputStream, 200, "{\"status\":\"ok\"}")
+                        } catch (e: Exception) {
+                            sendResponse(outputStream, 400, "{\"error\":\"invalid_json\"}")
+                        }
+                    } else {
+                        sendResponse(outputStream, 400, "{\"error\":\"forbidden\"}")
                     }
                 }
                 path == "/ping" -> {

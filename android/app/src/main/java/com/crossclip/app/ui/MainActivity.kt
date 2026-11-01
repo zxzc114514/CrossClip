@@ -1,11 +1,11 @@
 package com.crossclip.app.ui
 
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.app.AlertDialog
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -20,12 +20,12 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
-import com.crossclip.app.R
 import com.crossclip.app.BuildConfig
+import com.crossclip.app.R
 import com.crossclip.app.service.SyncForegroundService
 import com.crossclip.app.shizuku.ShizukuClipboardManager
-import com.crossclip.app.util.PermissionHelper
 import com.crossclip.app.util.DebugLogger
+import com.crossclip.app.util.PermissionHelper
 import rikka.shizuku.Shizuku
 
 class MainActivity : AppCompatActivity() {
@@ -37,8 +37,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSwitchDevice: TextView
     private lateinit var llDeviceHeader: View
     private lateinit var btnRefreshScan: TextView
+
+    private lateinit var llConnectedBar: LinearLayout
+    private lateinit var tvConnectedSummary: TextView
+    private lateinit var btnDisconnectPc: Button
+    private lateinit var llPinInputRow: LinearLayout
     private lateinit var etPinCode: EditText
     private lateinit var btnConnectPc: Button
+
     private lateinit var tvToggleManualIp: TextView
     private lateinit var llManualIpContainer: LinearLayout
     private lateinit var etManualIp: EditText
@@ -64,6 +70,13 @@ class MainActivity : AppCompatActivity() {
         llShizukuDebugContainer.visibility = View.GONE
     }
 
+    private lateinit var llKeepaliveHeader: View
+    private lateinit var tvKeepaliveToggleArrow: TextView
+    private lateinit var llKeepaliveContent: LinearLayout
+
+    private lateinit var llLogsHeader: View
+    private lateinit var tvLogsToggleArrow: TextView
+    private lateinit var llLogsContent: LinearLayout
     private lateinit var tvLogFilePath: TextView
     private lateinit var btnViewLogs: Button
     private lateinit var btnCopyLogs: Button
@@ -79,7 +92,7 @@ class MainActivity : AppCompatActivity() {
             if (grantResult == PackageManager.PERMISSION_GRANTED) {
                 ShizukuClipboardManager.onPermissionGranted()
                 DebugLogger.log("UI", "Shizuku 特权授权成功")
-                Toast.makeText(this, "Shizuku 特权授权成功！已开启系统级静默后台互传", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "特权已激活，已驻留独立 Shell 剪贴板守护进程", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -87,9 +100,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
-        // 不主动弹窗强行索取通知权限，若用户未授予通知权限，系统将天然不在通知中心展示常驻通知，前台服务仍可正常保活运行
-        // 用户若需要通知可在系统设置中随时开启
 
         try {
             Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
@@ -110,6 +120,11 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         applyHideFromRecentsPreference()
+        SyncForegroundService.instance?.let { svc ->
+            if (svc.connectionState != 1 && svc.pinCode.isNotEmpty()) {
+                svc.triggerFastReconnect("MainActivity.onResume")
+            }
+        }
     }
 
     private fun applyHideFromRecentsPreference() {
@@ -134,8 +149,14 @@ class MainActivity : AppCompatActivity() {
         btnSwitchDevice = findViewById(R.id.btn_switch_device)
         llDeviceHeader = findViewById(R.id.ll_device_header)
         btnRefreshScan = findViewById(R.id.btn_refresh_scan)
+
+        llConnectedBar = findViewById(R.id.ll_connected_bar)
+        tvConnectedSummary = findViewById(R.id.tv_connected_summary)
+        btnDisconnectPc = findViewById(R.id.btn_disconnect_pc)
+        llPinInputRow = findViewById(R.id.ll_pin_input_row)
         etPinCode = findViewById(R.id.et_pin_code)
         btnConnectPc = findViewById(R.id.btn_connect_pc)
+
         tvToggleManualIp = findViewById(R.id.tv_toggle_manual_ip)
         llManualIpContainer = findViewById(R.id.ll_manual_ip_container)
         etManualIp = findViewById(R.id.et_manual_ip)
@@ -164,6 +185,13 @@ class MainActivity : AppCompatActivity() {
         llShizukuDebugContainer = findViewById(R.id.ll_shizuku_debug_container)
         tvCollapseDebug = findViewById(R.id.tv_collapse_debug)
 
+        llKeepaliveHeader = findViewById(R.id.ll_keepalive_header)
+        tvKeepaliveToggleArrow = findViewById(R.id.tv_keepalive_toggle_arrow)
+        llKeepaliveContent = findViewById(R.id.ll_keepalive_content)
+
+        llLogsHeader = findViewById(R.id.ll_logs_header)
+        tvLogsToggleArrow = findViewById(R.id.tv_logs_toggle_arrow)
+        llLogsContent = findViewById(R.id.ll_logs_content)
         tvLogFilePath = findViewById(R.id.tv_log_file_path)
         btnViewLogs = findViewById(R.id.btn_view_logs)
         btnCopyLogs = findViewById(R.id.btn_copy_logs)
@@ -171,6 +199,18 @@ class MainActivity : AppCompatActivity() {
         btnClearLogs = findViewById(R.id.btn_clear_logs)
 
         tvLogFilePath.text = "日志路径: ${DebugLogger.getLogFilePath()}"
+
+        llKeepaliveHeader.setOnClickListener {
+            val expanding = llKeepaliveContent.visibility != View.VISIBLE
+            llKeepaliveContent.visibility = if (expanding) View.VISIBLE else View.GONE
+            tvKeepaliveToggleArrow.text = if (expanding) "收起" else "展开"
+        }
+
+        llLogsHeader.setOnClickListener {
+            val expanding = llLogsContent.visibility != View.VISIBLE
+            llLogsContent.visibility = if (expanding) View.VISIBLE else View.GONE
+            tvLogsToggleArrow.text = if (expanding) "收起" else "展开"
+        }
 
         btnViewLogs.setOnClickListener {
             showLogsDialog()
@@ -180,7 +220,7 @@ class MainActivity : AppCompatActivity() {
             val allLogs = DebugLogger.readAll()
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cm.setPrimaryClip(ClipData.newPlainText("CrossClip Logs", allLogs))
-            Toast.makeText(this, "已将全量运行日志复制到剪贴板", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "已复制全量运行日志", Toast.LENGTH_SHORT).show()
         }
 
         btnExportLogs.setOnClickListener {
@@ -197,7 +237,7 @@ class MainActivity : AppCompatActivity() {
                 ShizukuClipboardManager.State.READY -> {
                     handler.removeCallbacks(collapseDebugRunnable)
                     llShizukuDebugContainer.visibility = View.VISIBLE
-                    tvShizukuDebug.text = "正在自检 Shizuku 读写链路..."
+                    tvShizukuDebug.text = "正在执行底层剪贴板读写与回读自检..."
                     Thread {
                         SyncForegroundService.instance?.setSelfTestWriteMode(true)
                         val result = try {
@@ -207,7 +247,6 @@ class MainActivity : AppCompatActivity() {
                         }
                         runOnUiThread {
                             tvShizukuDebug.text = result
-                            // 展示 8 秒后自动收起
                             handler.postDelayed(collapseDebugRunnable, 8000L)
                         }
                     }.start()
@@ -221,7 +260,7 @@ class MainActivity : AppCompatActivity() {
                         if (launchIntent != null) {
                             startActivity(launchIntent)
                         } else {
-                            Toast.makeText(this, "未检测到 Shizuku 应用，请先安装并启动 Shizuku", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this, "未检测到 Shizuku 应用，请先安装并启动一次 Shizuku", Toast.LENGTH_LONG).show()
                         }
                     } catch (e: Exception) {
                         Toast.makeText(this, "未检测到 Shizuku，当前使用标准兼容模式", Toast.LENGTH_LONG).show()
@@ -231,7 +270,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnRefreshScan.setOnClickListener {
-            Toast.makeText(this, "正在重新搜索局域网电脑...", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "正在重新扫描局域网电脑...", Toast.LENGTH_SHORT).show()
             val service = SyncForegroundService.instance
             if (service != null) {
                 service.triggerRescan()
@@ -256,14 +295,18 @@ class MainActivity : AppCompatActivity() {
             }
             val service = SyncForegroundService.instance
             if (service != null) {
-                val pin = etPinCode.text.toString().trim()
+                val pin = etPinCode.text.toString().trim().ifEmpty { service.pinCode }
+                if (pin.isEmpty()) {
+                    Toast.makeText(this, "请先输入 6 位 PIN 码", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
                 service.connectWithPin(ip, pin) { success, statusCode, name ->
                     if (success) {
-                        Toast.makeText(this, "成功连接到电脑: $name", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "已连接至电脑: $name", Toast.LENGTH_SHORT).show()
                     } else if (statusCode == 403) {
-                        Toast.makeText(this, "PIN 码不匹配，请查看电脑托盘显示的 6 位数", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, "PIN 码不匹配，请核对电脑托盘显示的 6 位数字", Toast.LENGTH_LONG).show()
                     } else {
-                        Toast.makeText(this, "连接超时，请确认 IP 是否正确且已启动 CrossClip", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "连接超时，请确认电脑 IP 与防火墙状态", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -285,9 +328,9 @@ class MainActivity : AppCompatActivity() {
             sp.edit().putBoolean("hide_recents", isChecked).apply()
             applyHideFromRecentsPreference()
             if (isChecked) {
-                Toast.makeText(this, "已开启最近任务隐藏，退至桌面后在多任务中隐身，彻底免疫一键清理", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "已开启最近任务隐藏，退至桌面后在多任务列表中隐身", Toast.LENGTH_LONG).show()
             } else {
-                Toast.makeText(this, "最近任务隐藏已关闭", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "已关闭最近任务隐藏", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -300,7 +343,7 @@ class MainActivity : AppCompatActivity() {
                         putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, SyncForegroundService.CHANNEL_ID)
                     }
                     startActivity(intent)
-                    Toast.makeText(this, "已隐藏通知！在系统页面将【允许通知】关闭即可彻底无痕", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "在系统页面关闭允许通知即可隐藏通知栏提示", Toast.LENGTH_LONG).show()
                 } catch (_: Exception) {
                     val appIntent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
                         putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
@@ -310,6 +353,18 @@ class MainActivity : AppCompatActivity() {
             } else {
                 Toast.makeText(this, "已隐藏通知中心常驻通知", Toast.LENGTH_SHORT).show()
             }
+        }
+
+        btnDisconnectPc.setOnClickListener {
+            val service = SyncForegroundService.instance ?: return@setOnClickListener
+            service.disconnectCurrentPc()
+            llConnectedBar.visibility = View.GONE
+            llPinInputRow.visibility = View.VISIBLE
+            tvToggleManualIp.visibility = View.VISIBLE
+            etPinCode.isEnabled = true
+            btnConnectPc.text = "连接电脑"
+            btnConnectPc.isEnabled = true
+            Toast.makeText(this, "已断开当前电脑连接", Toast.LENGTH_SHORT).show()
         }
 
         btnConnectPc.setOnClickListener {
@@ -322,19 +377,24 @@ class MainActivity : AppCompatActivity() {
             if (service.connectionState == 1) {
                 service.disconnectCurrentPc()
                 etPinCode.isEnabled = true
-                etPinCode.setText("")
-                btnConnectPc.text = "一键连接"
+                btnConnectPc.text = "连接电脑"
                 Toast.makeText(this, "已断开与电脑的连接", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
             val pin = etPinCode.text.toString().trim()
-            if (pin.isEmpty()) {
+            if (pin.length != 6) {
                 Toast.makeText(this, "请输入电脑托盘显示的 6 位 PIN 码", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
             var targetIp = service.currentPcIp
+            if (targetIp.isEmpty()) {
+                val devices = service.getDiscoveredDeviceList()
+                targetIp = devices.firstOrNull { it.deviceId == service.currentTargetDeviceId }?.ip
+                    ?: devices.firstOrNull()?.ip
+                    ?: service.lastSavedPcIp
+            }
             if (targetIp.isEmpty()) {
                 val manualIp = etManualIp.text.toString().trim()
                 if (manualIp.isNotEmpty()) {
@@ -343,28 +403,27 @@ class MainActivity : AppCompatActivity() {
             }
 
             if (targetIp.isEmpty()) {
-                Toast.makeText(this, "尚未搜到电脑，请确保电脑已启动 CrossClip，或点击下方手动输入电脑 IP", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "尚未发现电脑，请确认电脑已启动 CrossClip 或手动指定 IP", Toast.LENGTH_LONG).show()
                 llManualIpContainer.visibility = View.VISIBLE
                 return@setOnClickListener
             }
 
             btnConnectPc.isEnabled = false
-            btnConnectPc.text = "配对中..."
+            btnConnectPc.text = "握手中..."
 
             service.connectWithPin(targetIp, pin) { success, statusCode, name ->
                 btnConnectPc.isEnabled = true
                 if (success) {
-                    btnConnectPc.text = "断开连接"
-                    etPinCode.isEnabled = false
-                    Toast.makeText(this, "配对成功！设备: $name", Toast.LENGTH_SHORT).show()
+                    btnConnectPc.text = "连接电脑"
+                    Toast.makeText(this, "已连接至 $name", Toast.LENGTH_SHORT).show()
                 } else if (statusCode == 403) {
-                    btnConnectPc.text = "一键连接"
+                    btnConnectPc.text = "连接电脑"
                     etPinCode.isEnabled = true
-                    Toast.makeText(this, "PIN 码不匹配！电脑端已生成新 PIN 码，请右键电脑右下角托盘查看", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "PIN 码不匹配，请右键电脑右下角托盘核对 6 位 PIN 码", Toast.LENGTH_LONG).show()
                 } else {
-                    btnConnectPc.text = "一键连接"
+                    btnConnectPc.text = "连接电脑"
                     etPinCode.isEnabled = true
-                    Toast.makeText(this, "连接超时，请确认手机和电脑在同一局域网", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "连接超时，请确认手机与电脑处于同一局域网", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -415,20 +474,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLockTaskGuideDialog() {
         val guideMessage = StringBuilder()
-            .append("在系统多任务切换界面（近期任务）为 CrossClip 应用卡片加锁，可彻底防止系统清理后台或一键清理全部任务时误杀同步进程：\n\n")
+            .append("在系统多任务切换界面为 CrossClip 卡片加锁，可防止系统清理后台时误杀同步服务：\n\n")
             .append("1. 小米、澎湃 OS (HyperOS / MIUI)：\n")
-            .append("   从屏幕底部上滑悬停进入多任务，长按 CrossClip 卡片，点击弹出菜单中的锁头图标；部分版本亦可直接向下拉动卡片加锁。\n\n")
+            .append("   进入多任务界面，长按 CrossClip 卡片点击锁头图标，或向下拉动卡片加锁。\n\n")
             .append("2. OPPO、一加、真我 (ColorOS / RealmeUI)：\n")
-            .append("   进入多任务后台，点击 CrossClip 卡片右上角设置菜单（三点图标），点击【锁定】。\n\n")
-            .append("3. vivo、iQOO (OriginOS)：\n")
-            .append("   进入多任务后台，向下拉动 CrossClip 卡片，卡片出现小锁图标即锁定成功。\n\n")
-            .append("4. 华为、荣耀 (HarmonyOS / MagicOS)：\n")
-            .append("   进入多任务后台，向下拉动 CrossClip 卡片，卡片出现锁头标记即锁定完成。\n\n")
-            .append("提示：若开启了下方的【多任务隐藏】，多任务栏将不会展示本应用卡片。建议保持多任务可见并给卡片加锁，兼顾后台驻留与防误杀。")
+            .append("   进入多任务界面，点击卡片右上角菜单选择锁定。\n\n")
+            .append("3. vivo、iQOO (OriginOS) / 华为、荣耀：\n")
+            .append("   进入多任务界面，向下拉动 CrossClip 卡片即可显示锁定标记。")
             .toString()
 
         AlertDialog.Builder(this)
-            .setTitle("多任务卡片加锁操作指引")
+            .setTitle("多任务卡片加锁指引")
             .setMessage(guideMessage)
             .setPositiveButton("知道了", null)
             .show()
@@ -462,13 +518,13 @@ class MainActivity : AppCompatActivity() {
         if (devices.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle("未发现在线电脑")
-                .setMessage("当前局域网未探测到任何在线电脑。\n\n请确认：\n1. 手机与电脑已连入同一局域网/Wi-Fi\n2. 电脑端 CrossClip.exe 是否已在运行\n3. 若电脑刚重启或切换了网络，可点击重新扫描")
+                .setMessage("当前局域网未探测到在线电脑。\n\n请确认：\n1. 手机与电脑已连入同一 Wi-Fi 局域网\n2. 电脑端 CrossClip.exe 正在运行\n3. 若刚连回 Wi-Fi，可点击重新扫描立即唤醒")
                 .setPositiveButton("重新扫描") { _, _ ->
                     service.triggerRescan()
                     Toast.makeText(this, "正在重新搜索局域网电脑...", Toast.LENGTH_SHORT).show()
                 }
                 .setNegativeButton("取消", null)
-                .setNeutralButton("清除历史配置") { _, _ ->
+                .setNeutralButton("清除配对记录") { _, _ ->
                     service.clearSavedHistory()
                     etPinCode.setText("")
                     etManualIp.setText("")
@@ -480,7 +536,7 @@ class MainActivity : AppCompatActivity() {
 
         val items = devices.map { dev ->
             val isCurrent = (service.connectionState == 1 && dev.ip == service.currentPcIp)
-            val tag = if (isCurrent) " [当前连接]" else ""
+            val tag = if (isCurrent) " · 当前连接" else ""
             "${dev.name} (${dev.ip})$tag"
         }.toTypedArray()
 
@@ -497,9 +553,11 @@ class MainActivity : AppCompatActivity() {
                 service.selectTargetDevice(chosen)
                 val sp = getSharedPreferences("cross_clip_config", Context.MODE_PRIVATE)
                 val devPin = sp.getString("pin_code_${chosen.deviceId}", "") ?: ""
-                etPinCode.setText(devPin)
+                if (devPin.isNotEmpty()) {
+                    etPinCode.setText(devPin)
+                }
                 etPinCode.isEnabled = true
-                btnConnectPc.text = "一键连接"
+                btnConnectPc.text = "连接电脑"
                 Toast.makeText(this, "已切换目标电脑: ${chosen.name} (${chosen.ip})", Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }
@@ -526,9 +584,9 @@ class MainActivity : AppCompatActivity() {
                     val deviceList = service.getDiscoveredDeviceList()
                     val devCount = deviceList.size
 
-                    // 优先从实时探测列表中提取当前目标电脑，杜绝展示未连通的旧死 IP
                     val liveTarget = deviceList.firstOrNull { it.deviceId == service.currentTargetDeviceId }
                         ?: deviceList.firstOrNull { service.currentPcIp.isNotEmpty() && it.ip == service.currentPcIp }
+                        ?: deviceList.firstOrNull()
                     val activeIp = if (service.connectionState == 1) {
                         service.currentPcIp
                     } else {
@@ -542,66 +600,79 @@ class MainActivity : AppCompatActivity() {
 
                     if (activeIp.isNotEmpty() && (service.connectionState == 1 || liveTarget != null)) {
                         if (devCount > 1) {
-                            tvDiscoveredDevice.text = "🟢 局域网已发现 ($devCount 台): $activeName ($activeIp)"
+                            tvDiscoveredDevice.text = "在线设备 ($devCount 台): $activeName · $activeIp"
                             btnSwitchDevice.visibility = View.VISIBLE
                             btnSwitchDevice.text = "切换 ($devCount)"
                         } else {
-                            tvDiscoveredDevice.text = "🟢 局域网已发现: $activeName ($activeIp)"
+                            tvDiscoveredDevice.text = "在线设备: $activeName · $activeIp"
                             btnSwitchDevice.visibility = View.VISIBLE
                             btnSwitchDevice.text = "选择"
                         }
-                        tvDiscoveredDevice.setTextColor(Color.parseColor("#10B981"))
+                        tvDiscoveredDevice.setTextColor(Color.parseColor("#0D131A"))
                     } else {
                         if (devCount > 0) {
-                            tvDiscoveredDevice.text = "🟢 局域网发现其他电脑 ($devCount 台)"
-                            tvDiscoveredDevice.setTextColor(Color.parseColor("#10B981"))
+                            tvDiscoveredDevice.text = "发现在线电脑 ($devCount 台)，点击选择"
+                            tvDiscoveredDevice.setTextColor(Color.parseColor("#0D131A"))
                             btnSwitchDevice.visibility = View.VISIBLE
                             btnSwitchDevice.text = "选择 ($devCount)"
                         } else {
-                            tvDiscoveredDevice.text = "🔍 正在局域网全网段搜索电脑..."
-                            tvDiscoveredDevice.setTextColor(Color.parseColor("#64748B"))
+                            val hint = if (service.lastSavedPcIp.isNotEmpty()) {
+                                "等待历史电脑 (${service.lastSavedPcIp}) 上线..."
+                            } else {
+                                "正在扫描当前 Wi-Fi 局域网内的电脑..."
+                            }
+                            tvDiscoveredDevice.text = hint
+                            tvDiscoveredDevice.setTextColor(Color.parseColor("#475569"))
                             btnSwitchDevice.visibility = View.GONE
                         }
                     }
 
                     when (service.connectionState) {
                         1 -> {
-                            tvStatus.text = "● 已连接至 $pcName (${service.currentPcIp})"
-                            tvStatus.setTextColor(Color.parseColor("#10B981"))
-                            btnConnectPc.text = "断开连接"
-                            btnConnectPc.isEnabled = true
-                            etPinCode.isEnabled = false
+                            tvStatus.text = "● 已连接 · $pcName (${service.currentPcIp})"
+                            tvStatus.setTextColor(Color.parseColor("#059669"))
+                            llConnectedBar.visibility = View.VISIBLE
+                            llPinInputRow.visibility = View.GONE
+                            tvToggleManualIp.visibility = View.GONE
+                            llManualIpContainer.visibility = View.GONE
                         }
                         2 -> {
-                            tvStatus.text = "● PIN 码不匹配 (电脑已换码，请输入新码重连)"
-                            tvStatus.setTextColor(Color.parseColor("#EF4444"))
-                            btnConnectPc.text = "一键连接"
+                            tvStatus.text = "● PIN 码不匹配，请核对电脑端 6 位 PIN 码后重连"
+                            tvStatus.setTextColor(Color.parseColor("#DC2626"))
+                            llConnectedBar.visibility = View.GONE
+                            llPinInputRow.visibility = View.VISIBLE
+                            tvToggleManualIp.visibility = View.VISIBLE
+                            btnConnectPc.text = "连接电脑"
                             btnConnectPc.isEnabled = true
                             etPinCode.isEnabled = true
                         }
                         -1 -> {
-                            tvStatus.text = "● 正在验证密文挑战握手..."
-                            tvStatus.setTextColor(Color.parseColor("#F59E0B"))
-                            btnConnectPc.text = "配对中..."
+                            tvStatus.text = "● 正在执行 AES-256-GCM 密文挑战握手..."
+                            tvStatus.setTextColor(Color.parseColor("#D97706"))
+                            llConnectedBar.visibility = View.GONE
+                            llPinInputRow.visibility = View.VISIBLE
+                            btnConnectPc.text = "握手中..."
                             btnConnectPc.isEnabled = false
                         }
                         else -> {
-                            btnConnectPc.text = "一键连接"
+                            llConnectedBar.visibility = View.GONE
+                            llPinInputRow.visibility = View.VISIBLE
+                            tvToggleManualIp.visibility = View.VISIBLE
+                            btnConnectPc.text = "连接电脑"
                             btnConnectPc.isEnabled = true
                             etPinCode.isEnabled = true
                             if (liveTarget != null) {
-                                tvStatus.text = "● 已发现目标电脑，请输入 6 位 PIN 码连接"
-                                tvStatus.setTextColor(Color.parseColor("#0284C7"))
+                                tvStatus.text = "● 已发现电脑，输入 6 位 PIN 码即可建立加密连接"
+                                tvStatus.setTextColor(Color.parseColor("#1E40AF"))
                             } else {
-                                tvStatus.text = "● 电脑离线中，局域网搜索中..."
-                                tvStatus.setTextColor(Color.parseColor("#64748B"))
+                                tvStatus.text = "● 尚未连接电脑，回到局域网后将自动秒连"
+                                tvStatus.setTextColor(Color.parseColor("#475569"))
                             }
                         }
                     }
                 }
-                btnBatteryPerm.text = "去设置"
                 updateShizukuUI()
-                handler.postDelayed(this, 1500)
+                handler.postDelayed(this, 1200)
             }
         })
     }
@@ -620,9 +691,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("开启后台无限制")
             .setMessage(
-                "MIUI/HyperOS 默认会冻结后台应用，导致剪贴板自动互传几秒后失效。\n" +
-                    "请前往设置，把 CrossClip 的自启动打开、省电策略设为无限制，" +
-                    "并在权限管理中允许后台运行和后台弹出界面。"
+                "MIUI / HyperOS 默认会限制后台网络，建议将 CrossClip 省电策略设为无限制并开启自启动，确保息屏与离开局域网再回时秒级重连。"
             )
             .setPositiveButton("前往设置") { _, _ ->
                 PermissionHelper.openBatteryKeepAliveSettings(this)
@@ -634,23 +703,29 @@ class MainActivity : AppCompatActivity() {
     private fun updateShizukuUI() {
         when (ShizukuClipboardManager.getState()) {
             ShizukuClipboardManager.State.READY -> {
-                tvShizukuBadge.text = "🟢 特权已激活"
-                tvShizukuBadge.setTextColor(Color.parseColor("#10B981"))
-                tvShizukuDesc.text = "已连接系统底层的剪贴板服务，享受零弹窗、零焦点切换的 100% 后台静默互传。"
-                btnShizukuAuth.text = "重新自检"
+                if (ShizukuClipboardManager.isDaemonAliveOnly()) {
+                    tvShizukuBadge.text = "● 独立守护运行中 (免疫断网)"
+                    tvShizukuBadge.setTextColor(Color.parseColor("#059669"))
+                    tvShizukuDesc.text = "Shizuku 已退出，但 UID 2000 独立守护进程仍在后台常驻，100% 保持无感剪贴板同步。"
+                } else {
+                    tvShizukuBadge.text = "● 特权直连 + 独立守护双激活"
+                    tvShizukuBadge.setTextColor(Color.parseColor("#059669"))
+                    tvShizukuDesc.text = "已激活 Shizuku 与 UID 2000 独立守护双通道，即便离开 Wi-Fi 无线调试关闭也不断连。"
+                }
+                btnShizukuAuth.text = "链路自检"
                 btnShizukuAuth.isEnabled = true
             }
             ShizukuClipboardManager.State.UNAUTHORIZED -> {
-                tvShizukuBadge.text = "🟡 待授权"
-                tvShizukuBadge.setTextColor(Color.parseColor("#F59E0B"))
-                tvShizukuDesc.text = "检测到 Shizuku 服务正在运行，点击下方按钮授权以开启完全静默互传。"
+                tvShizukuBadge.text = "● 待授权"
+                tvShizukuBadge.setTextColor(Color.parseColor("#D97706"))
+                tvShizukuDesc.text = "检测到 Shizuku 正在运行，点击右侧按钮授权即可驻留 UID 2000 独立守护进程。"
                 btnShizukuAuth.text = "去授权"
                 btnShizukuAuth.isEnabled = true
             }
             ShizukuClipboardManager.State.NOT_RUNNING -> {
-                tvShizukuBadge.text = "⚪ 服务未运行"
-                tvShizukuBadge.setTextColor(Color.parseColor("#64748B"))
-                tvShizukuDesc.text = "Shizuku 未运行或未安装，当前已自动启用前台服务与兼容模式保障正常互传。"
+                tvShizukuBadge.text = "● 待激活 (开机仅需一次)"
+                tvShizukuBadge.setTextColor(Color.parseColor("#475569"))
+                tvShizukuDesc.text = "首次启动一次 Shizuku 即可注入独立 Shell 守护进程；只要手机不重启，后续Shizuku 关机也不影响同步。"
                 btnShizukuAuth.text = "打开 Shizuku"
                 btnShizukuAuth.isEnabled = true
             }
@@ -667,7 +742,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runShizukuSelfTest() {
-        tvShizukuDebug.text = "正在自检 Shizuku 读取链路..."
+        tvShizukuDebug.text = "正在自检剪贴板守护链路..."
         Thread {
             val result = ShizukuClipboardManager.debugReadClipboard()
             runOnUiThread {

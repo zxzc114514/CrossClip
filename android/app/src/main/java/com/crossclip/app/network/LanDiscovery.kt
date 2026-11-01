@@ -11,13 +11,12 @@ import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class LanDiscovery(
     private val context: Context,
     private val udpPort: Int = 18234,
-    private val onDeviceFound: (deviceId: String, deviceName: String, ip: String, httpPort: Int, wsPort: Int) -> Unit
+    private val onDeviceFound: (deviceId: String, deviceName: String, ip: String, httpPort: Int) -> Unit
 ) {
     private val TAG = "CrossClipDiscovery"
 
@@ -26,12 +25,17 @@ class LanDiscovery(
     @Volatile
     var isConnected = false
 
+    private val isSubnetScanning = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val scanGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private val sleepMonitor = Object()
+
+    @Volatile
     private var socket: DatagramSocket? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private var scanExecutor: java.util.concurrent.ExecutorService? = null
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(500, TimeUnit.MILLISECONDS)
-        .readTimeout(500, TimeUnit.MILLISECONDS)
+        .connectTimeout(450, TimeUnit.MILLISECONDS)
+        .readTimeout(450, TimeUnit.MILLISECONDS)
         .build()
 
     private fun acquireMulticastLock() {
@@ -100,18 +104,28 @@ class LanDiscovery(
         return ips
     }
 
+    @Volatile
     private var currentHintIp: String = ""
+    @Volatile
     private var currentDeviceId: String = "android"
+    @Volatile
+    private var currentDeviceName: String = "安卓手机"
 
     fun startDiscovery(deviceId: String = "android", deviceName: String = "安卓手机", hintIp: String = "") {
-        if (isSearching) return
-        isSearching = true
-        currentHintIp = hintIp
+        if (hintIp.isNotEmpty()) {
+            currentHintIp = hintIp
+        }
         currentDeviceId = deviceId
+        currentDeviceName = deviceName
+        if (isSearching) {
+            requestImmediateScan(hintIp)
+            return
+        }
+        isSearching = true
         acquireMulticastLock()
 
         if (scanExecutor == null || scanExecutor?.isShutdown == true || scanExecutor?.isTerminated == true) {
-            scanExecutor = java.util.concurrent.Executors.newFixedThreadPool(16)
+            scanExecutor = java.util.concurrent.Executors.newFixedThreadPool(20)
         }
 
         // 1. 启动 UDP 广播探测与应答监听
@@ -141,30 +155,25 @@ class LanDiscovery(
                         val fromIp = packet.address.hostAddress ?: ""
                         if (fromIp.isNotEmpty() && !fromIp.startsWith("127.")) {
                             val localIps = getLocalIpv4List()
-                            // 1. 过滤本机回环广播
                             if (localIps.contains(fromIp)) {
                                 continue
                             }
 
                             val json = JSONObject(text)
                             val msgType = json.optString("type", "")
-                            // 2. 严格校验报文类型：只处理电脑端响应的 OFFER 报文，直接丢弃手机发出的 DISCOVER 广播
                             if (msgType != "OFFER") {
                                 continue
                             }
 
                             val devId = json.optString("device_id", "")
-                            // 3. 过滤自身设备 ID 或包含 android 前缀的移动端设备
-                            if (devId == deviceId || devId.startsWith("android_")) {
+                            if (devId == currentDeviceId || devId.startsWith("android_")) {
                                 continue
                             }
 
                             val actualDevId = if (devId.isNotEmpty()) devId else "pc_${fromIp.replace('.', '_')}"
                             val httpPort = json.optInt("http_port", 18236)
-                            val wsPort = json.optInt("ws_port", 18238)
                             val pcName = json.optString("device_name", "Windows 电脑")
 
-                            // 优先使用数据包物理源 IP，若报文内包含与手机同子网的候选 IP 则优选该候选 IP
                             var targetIp = fromIp
                             val ipsArray = json.optJSONArray("ips")
                             if (ipsArray != null && ipsArray.length() > 0) {
@@ -178,48 +187,128 @@ class LanDiscovery(
                             }
 
                             Log.i(TAG, "通过 UDP 发现电脑: $pcName ($actualDevId) -> $targetIp:$httpPort")
-                            onDeviceFound(actualDevId, pcName, targetIp, httpPort, wsPort)
+                            onDeviceFound(actualDevId, pcName, targetIp, httpPort)
                         }
                     } catch (e: Exception) {
                         if (!isSearching) break
                     }
                 }
-            }.start()
+            }.apply {
+                isDaemon = true
+                name = "CrossClip-UdpRecv"
+                start()
+            }
 
-            // 广播发送循环
-            val reqMsg = JSONObject().apply {
-                put("type", "DISCOVER")
-                put("device_id", deviceId)
-                put("device_name", deviceName)
-            }.toString().toByteArray(Charsets.UTF_8)
-
+            // 广播发送与周期扫描主循环
             while (isSearching) {
-                val broadcastAddrs = getBroadcastAddresses()
-                for (addr in broadcastAddrs) {
-                    try {
-                        val packet = DatagramPacket(reqMsg, reqMsg.size, addr, udpPort)
-                        socket?.send(packet)
-                    } catch (_: Exception) {}
-                }
+                sendUdpBroadcastBurst()
 
                 if (!isConnected) {
-                    // 未连接状态：全网段高频并发探测
+                    if (currentHintIp.isNotEmpty()) {
+                        probeSingleIpNow(currentHintIp)
+                    }
                     fastSubnetScan()
-                    try {
-                        Thread.sleep(2500)
-                    } catch (e: InterruptedException) {
-                        break
+                    var interrupted = false
+                    synchronized(sleepMonitor) {
+                        try {
+                            sleepMonitor.wait(8000L)
+                        } catch (_: InterruptedException) {
+                            interrupted = true
+                        }
                     }
+                    if (interrupted) break
                 } else {
-                    // 已连接状态：转入低频保活探测 (休眠 8 秒)，节约功耗同时持续感知网络变化
-                    try {
-                        Thread.sleep(8000)
-                    } catch (e: InterruptedException) {
-                        break
+                    var interrupted = false
+                    synchronized(sleepMonitor) {
+                        try {
+                            sleepMonitor.wait(45000L)
+                        } catch (_: InterruptedException) {
+                            interrupted = true
+                        }
                     }
+                    if (interrupted) break
                 }
             }
-        }.start()
+        }.apply {
+            isDaemon = true
+            name = "CrossClip-UdpLoop"
+            start()
+        }
+    }
+
+    /**
+     * 立即发送一簇 UDP 广播探测包 (双发防 Wi-Fi 切换初期丢包)
+     */
+    fun sendUdpBroadcastBurst() {
+        val reqMsg = JSONObject().apply {
+            put("type", "DISCOVER")
+            put("device_id", currentDeviceId)
+            put("device_name", currentDeviceName)
+        }.toString().toByteArray(Charsets.UTF_8)
+
+        val broadcastAddrs = getBroadcastAddresses()
+        for (round in 0..1) {
+            for (addr in broadcastAddrs) {
+                try {
+                    val packet = DatagramPacket(reqMsg, reqMsg.size, addr, udpPort)
+                    socket?.send(packet)
+                } catch (_: Exception) {}
+            }
+            if (round == 0) {
+                try {
+                    Thread.sleep(100)
+                } catch (_: InterruptedException) {}
+            }
+        }
+    }
+
+    /**
+     * 不受子网扫描锁限制，立即对指定历史 IP 执行毫秒级单点 HTTP 探活
+     */
+    fun probeSingleIpNow(targetIp: String) {
+        if (targetIp.isBlank() || targetIp.startsWith("127.")) return
+        currentHintIp = targetIp
+        Thread {
+            probeIp(targetIp)
+        }.apply {
+            isDaemon = true
+            name = "CrossClip-HintProbe"
+            start()
+        }
+    }
+
+    /**
+     * 外部事件驱动触发立即探活 (如 Wi-Fi 恢复、屏幕点亮、手动刷新时调用)
+     */
+    fun requestImmediateScan(hintIp: String = "") {
+        if (hintIp.isNotEmpty()) {
+            currentHintIp = hintIp
+        }
+        if (!isSearching) return
+
+        // 1. 推进扫描世代，使旧一轮卡住的离线探测任务立即让路，并释放扫描锁以允许新子网扫描
+        scanGeneration.incrementAndGet()
+        isSubnetScanning.set(false)
+
+        // 2. 唤醒主循环休眠
+        synchronized(sleepMonitor) {
+            sleepMonitor.notifyAll()
+        }
+
+        // 3. 立即并发执行：单点探测历史 IP + UDP 广播 + 全子网扫描
+        Thread {
+            if (currentHintIp.isNotEmpty()) {
+                probeIp(currentHintIp)
+            }
+            sendUdpBroadcastBurst()
+            if (!isConnected) {
+                fastSubnetScan()
+            }
+        }.apply {
+            isDaemon = true
+            name = "CrossClip-ImmediateScan"
+            start()
+        }
     }
 
     private fun isSameSubnetAny(ip: String, localIps: List<String>): Boolean {
@@ -230,10 +319,15 @@ class LanDiscovery(
     }
 
     /**
-     * 快速并发扫描当前子网所有 IP 的 18236 端口 (确保 100% 发现)
+     * 快速并发扫描当前子网所有 IP 的 18236 端口 (带世代保护)
      */
     private fun fastSubnetScan() {
         val executor = scanExecutor ?: return
+        if (!isSubnetScanning.compareAndSet(false, true)) {
+            return
+        }
+
+        val gen = scanGeneration.incrementAndGet()
         val localIps = getLocalIpv4List()
         val prefixesToScan = mutableSetOf<String>()
 
@@ -244,33 +338,53 @@ class LanDiscovery(
             }
         }
 
-        // 如果存在历史 IP 且其处于不同网段，将其前缀也纳入扫描
         if (currentHintIp.isNotEmpty()) {
             val hintParts = currentHintIp.split(".")
             if (hintParts.size == 4) {
                 prefixesToScan.add("${hintParts[0]}.${hintParts[1]}.${hintParts[2]}")
-                // 首先单发探测 hintIp
                 try {
                     executor.submit {
-                        probeIp(currentHintIp)
+                        if (gen == scanGeneration.get() && isSearching && !isConnected) {
+                            probeIp(currentHintIp)
+                        }
                     }
                 } catch (_: java.util.concurrent.RejectedExecutionException) {}
             }
         }
 
-        for (subnetPrefix in prefixesToScan) {
-            for (i in 1..254) {
-                val targetIp = "$subnetPrefix.$i"
-                if (localIps.contains(targetIp)) continue
-                try {
-                    executor.submit {
-                        if (!isSearching || isConnected) return@submit
-                        probeIp(targetIp)
+        Thread {
+            try {
+                val tasks = mutableListOf<java.util.concurrent.Future<*>>()
+                for (subnetPrefix in prefixesToScan) {
+                    for (i in 1..254) {
+                        val targetIp = "$subnetPrefix.$i"
+                        if (localIps.contains(targetIp)) continue
+                        try {
+                            val future = executor.submit {
+                                if (gen != scanGeneration.get() || !isSearching || isConnected) return@submit
+                                probeIp(targetIp)
+                            }
+                            tasks.add(future)
+                        } catch (_: java.util.concurrent.RejectedExecutionException) {
+                            break
+                        }
                     }
-                } catch (_: java.util.concurrent.RejectedExecutionException) {
-                    return
+                }
+                for (task in tasks) {
+                    if (gen != scanGeneration.get() || isConnected) break
+                    try {
+                        task.get(800, TimeUnit.MILLISECONDS)
+                    } catch (_: Exception) {}
+                }
+            } finally {
+                if (gen == scanGeneration.get()) {
+                    isSubnetScanning.set(false)
                 }
             }
+        }.apply {
+            isDaemon = true
+            name = "CrossClip-SubnetSupervisor"
+            start()
         }
     }
 
@@ -286,10 +400,9 @@ class LanDiscovery(
                 val json = JSONObject(bodyStr)
                 val devName = json.optString("device_name", "Windows 电脑")
                 val devId = json.optString("device_id", "").ifEmpty { "pc_${targetIp.replace('.', '_')}" }
-                // 排除自身 ID 以及任何包含 android 前缀的设备
                 if (!devId.startsWith("android_") && devId != currentDeviceId) {
                     Log.i(TAG, "通过主动探测发现电脑: $devName ($devId) -> $targetIp:18236")
-                    onDeviceFound(devId, devName, targetIp, 18236, 18238)
+                    onDeviceFound(devId, devName, targetIp, 18236)
                 }
             }
             resp.close()
@@ -298,6 +411,9 @@ class LanDiscovery(
 
     fun stopDiscovery() {
         isSearching = false
+        synchronized(sleepMonitor) {
+            sleepMonitor.notifyAll()
+        }
         try {
             scanExecutor?.shutdownNow()
         } catch (_: Exception) {}

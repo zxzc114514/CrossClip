@@ -19,11 +19,30 @@ object HttpUploader {
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .writeTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(3, TimeUnit.SECONDS)
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .writeTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(2, TimeUnit.SECONDS)
         .connectionPool(okhttp3.ConnectionPool(0, 1, TimeUnit.SECONDS))
         .build()
+
+    /**
+     * 构建基于 PIN 派生密钥的 AES-256-GCM 密文挑战令牌 (带毫秒级时间戳防重放)
+     */
+    fun buildAuthCipher(
+        pinCode: String,
+        deviceId: String = "",
+        deviceName: String = "",
+        clientPort: Int = 18237
+    ): String {
+        val nowMs = System.currentTimeMillis()
+        val innerPayload = JSONObject().apply {
+            put("timestamp", nowMs)
+            put("client_port", clientPort)
+            put("device_id", deviceId)
+            put("device_name", deviceName)
+        }.toString()
+        return CryptoUtil.encrypt(innerPayload, pinCode.trim())
+    }
 
     /**
      * 验证 PIN 码与电脑连通性并注册手机端对等接收端口
@@ -38,24 +57,22 @@ object HttpUploader {
         clientPort: Int = 18237,
         onResult: (success: Boolean, statusCode: Int, deviceName: String?, deviceId: String?) -> Unit
     ) {
+        if (pcIp.isBlank() || pinCode.isBlank()) {
+            onResult(false, -1, null, null)
+            return
+        }
         val url = "http://$pcIp:$httpPort/auth"
         DebugLogger.log("HTTP", "发起 PIN 码密文挑战握手: $url (对等接收端口: $clientPort)")
-        val nowMs = System.currentTimeMillis()
 
-        // 构建握手挑战内层数据包
-        val innerPayload = JSONObject().apply {
-            put("timestamp", nowMs)
-            put("client_port", clientPort)
-            put("device_id", deviceId)
-            put("device_name", deviceName)
-        }.toString()
-
-        // 使用 PIN 派生密钥进行 AES-256-GCM 加密 (杜绝明文 PIN 传输)
-        val authCipher = CryptoUtil.encrypt(innerPayload, pinCode)
+        val authCipher = try {
+            buildAuthCipher(pinCode, deviceId, deviceName, clientPort)
+        } catch (e: Exception) {
+            onResult(false, -1, null, null)
+            return
+        }
 
         val json = JSONObject().apply {
             put("auth_cipher", authCipher)
-            put("timestamp", nowMs)
         }.toString()
 
         val requestBody = json.toRequestBody(JSON_MEDIA_TYPE)
@@ -150,7 +167,7 @@ object HttpUploader {
     }
 
     /**
-     * 周期性向电脑端发送保活心跳与当前 IP/端口注册 (刷新路由器 ARP 与电脑端设备表)
+     * 周期性向电脑端发送 AES-256-GCM 密文保活心跳与当前 IP/端口注册
      */
     fun sendHeartbeat(
         pcIp: String,
@@ -161,15 +178,19 @@ object HttpUploader {
         clientPort: Int = 18237,
         onResult: ((Boolean) -> Unit)? = null
     ) {
-        if (pcIp.isEmpty() || pinCode.isEmpty()) return
+        if (pcIp.isEmpty() || pinCode.isEmpty()) {
+            onResult?.invoke(false)
+            return
+        }
         val url = "http://$pcIp:$httpPort/heartbeat"
-        val pinHash = CryptoUtil.computeHash(pinCode).substring(0, 16)
+        val authCipher = try {
+            buildAuthCipher(pinCode, deviceId, deviceName, clientPort)
+        } catch (_: Exception) {
+            onResult?.invoke(false)
+            return
+        }
         val json = JSONObject().apply {
-            put("pin_hash", pinHash)
-            put("client_port", clientPort)
-            put("device_id", deviceId)
-            put("device_name", deviceName)
-            put("timestamp", System.currentTimeMillis())
+            put("auth_cipher", authCipher)
         }.toString()
         val requestBody = json.toRequestBody(JSON_MEDIA_TYPE)
         val request = Request.Builder().url(url).post(requestBody).build()
@@ -181,7 +202,7 @@ object HttpUploader {
             override fun onResponse(call: Call, response: Response) {
                 val ok = response.isSuccessful
                 response.close()
-                DebugLogger.log("HEARTBEAT_SEND", "心跳上报成功 (状态码: ${response.code})")
+                DebugLogger.log("HEARTBEAT_SEND", "心跳上报结果: $ok (状态码: ${response.code})")
                 onResult?.invoke(ok)
             }
         })
