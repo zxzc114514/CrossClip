@@ -64,6 +64,9 @@ class SyncForegroundService : Service() {
     private lateinit var clipboardManager: ClipboardManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val recentHashes = ArrayDeque<String>(50)
+    private val inFlightHashes = HashSet<String>()
+    private val delayedReadRunnable180 = Runnable { readAndProcessLocalClipboard() }
+    private val delayedReadRunnable450 = Runnable { readAndProcessLocalClipboard() }
 
     private lateinit var lanDiscovery: LanDiscovery
     private lateinit var nsdHelper: NsdHelper
@@ -775,6 +778,16 @@ class SyncForegroundService : Service() {
 
     private fun onLocalClipboardChanged() {
         if (!autoSync || selfTestWriteInProgress) return
+        readAndProcessLocalClipboard()
+        // 针对浏览器/WebView 复制链接时存在数毫秒写入延迟或分阶段写入的情况，安排 180ms 与 450ms 二次补读
+        mainHandler.removeCallbacks(delayedReadRunnable180)
+        mainHandler.removeCallbacks(delayedReadRunnable450)
+        mainHandler.postDelayed(delayedReadRunnable180, 180L)
+        mainHandler.postDelayed(delayedReadRunnable450, 450L)
+    }
+
+    private fun readAndProcessLocalClipboard() {
+        if (!autoSync || selfTestWriteInProgress) return
         try {
             var text: String? = null
             var readSource = "none"
@@ -784,8 +797,8 @@ class SyncForegroundService : Service() {
             }
             if (text.isNullOrEmpty()) {
                 val clip = clipboardManager.primaryClip
-                if (clip != null && clip.itemCount > 0) {
-                    text = clip.getItemAt(0).text?.toString()
+                text = ShizukuClipboardManager.extractTextFromClipData(clip)
+                if (!text.isNullOrEmpty()) {
                     readSource = "SystemClip"
                 }
             }
@@ -798,21 +811,41 @@ class SyncForegroundService : Service() {
         }
     }
 
-    private fun onLocalClipboardTextDetected(text: String, readSource: String) {
+    private fun onLocalClipboardTextDetected(text: String, readSource: String, isRetry: Boolean = false) {
         if (!autoSync || selfTestWriteInProgress || text.isEmpty()) return
         val hash = CryptoUtil.computeHash(text)
         synchronized(recentHashes) {
-            if (recentHashes.contains(hash)) {
+            if (recentHashes.contains(hash) || inFlightHashes.contains(hash)) {
                 return
             }
-            recentHashes.add(hash)
-            if (recentHashes.size > 50) recentHashes.removeFirst()
+            inFlightHashes.add(hash)
         }
         val preview = if (text.length > 20) text.take(20) + "..." else text
         Log.i(TAG, "检测到本地复制 ($readSource)，正在静默自动同步至电脑...")
         lastSyncEvent = "手机复制: 长度 ${text.length}"
         DebugLogger.log("CLIP_DETECT", "检测到本地新剪贴板 [$readSource]: 长度=${text.length}, hash=$hash, 预览=[$preview]")
-        doBroadcastText(text)
+        doBroadcastText(text) { success ->
+            synchronized(recentHashes) {
+                inFlightHashes.remove(hash)
+                if (success) {
+                    if (!recentHashes.contains(hash)) {
+                        recentHashes.add(hash)
+                        if (recentHashes.size > 50) recentHashes.removeFirst()
+                    }
+                }
+            }
+            if (!success) {
+                DebugLogger.log("SVC_SEND", "自动同步未送达 (hash=$hash, isRetry=$isRetry)，不锁定 recentHashes 并触发快速重连")
+                if (pinCode.isNotEmpty()) {
+                    triggerFastReconnect("自动同步未送达自愈")
+                }
+                if (!isRetry) {
+                    mainHandler.postDelayed({
+                        onLocalClipboardTextDetected(text, "$readSource-Retry", isRetry = true)
+                    }, 700L)
+                }
+            }
+        }
     }
 
     private fun doBroadcastText(text: String, onComplete: ((Boolean) -> Unit)? = null) {
@@ -901,9 +934,7 @@ class SyncForegroundService : Service() {
             }
             if (text.isNullOrEmpty()) {
                 val clip = clipboardManager.primaryClip
-                if (clip != null && clip.itemCount > 0) {
-                    text = clip.getItemAt(0).text?.toString()
-                }
+                text = ShizukuClipboardManager.extractTextFromClipData(clip)
             }
             val finalText = text
             if (!finalText.isNullOrEmpty()) {

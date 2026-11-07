@@ -433,12 +433,29 @@ object ShizukuClipboardManager {
         return false
     }
 
+    fun extractTextFromClipData(clip: ClipData?): String? {
+        if (clip == null || clip.itemCount <= 0) return null
+        for (i in 0 until clip.itemCount) {
+            val item = clip.getItemAt(i) ?: continue
+            val direct = item.text?.toString()
+            if (!direct.isNullOrEmpty()) return direct
+            val uriStr = item.uri?.toString()
+            if (!uriStr.isNullOrEmpty()) return uriStr
+            val coerced = try {
+                item.coerceToText(appContext)?.toString()
+            } catch (_: Throwable) {
+                null
+            }
+            if (!coerced.isNullOrEmpty()) return coerced
+        }
+        return null
+    }
+
     private fun readClipboardDirectFromProxy(invokeClass: Class<*>, proxy: Any): String? {
         return try {
             val result = invokeIClipboardMethod(invokeClass, proxy, METHOD_GET, skipNullResult = true)
-            if (result is ClipData && result.itemCount > 0) {
-                val item = result.getItemAt(0)
-                item.text?.toString() ?: item.coerceToText(null)?.toString()
+            if (result is ClipData) {
+                extractTextFromClipData(result)
             } else {
                 null
             }
@@ -493,9 +510,8 @@ object ShizukuClipboardManager {
 
             try {
                 val result = invokeIClipboardMethod(invokeClass, proxy, METHOD_GET)
-                if (result is ClipData && result.itemCount > 0) {
-                    val item = result.getItemAt(0)
-                    val text = item.text?.toString() ?: item.coerceToText(null)?.toString()
+                if (result is ClipData) {
+                    val text = extractTextFromClipData(result)
                     if (!text.isNullOrEmpty()) {
                         return "Shizuku 读取成功 (长度 ${text.length})\n$report"
                     }

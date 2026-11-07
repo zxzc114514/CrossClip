@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 object ClipShellDaemon {
 
     const val DAEMON_PORT = 18239
+    const val DAEMON_VERSION = 2
     private const val SHELL_PACKAGE = "com.android.shell"
     private const val LISTENER_CLASS = "android.content.IOnPrimaryClipChangedListener"
     private const val LISTENER_STUB_CLASS = "android.content.IOnPrimaryClipChangedListener\$Stub"
@@ -154,6 +155,34 @@ object ClipShellDaemon {
         } catch (_: Throwable) {}
     }
 
+    private fun readHeaderLine(input: java.io.InputStream): String? {
+        val sb = java.io.ByteArrayOutputStream(128)
+        var readAny = false
+        while (true) {
+            val b = input.read()
+            if (b == -1) {
+                return if (readAny) sb.toString(Charsets.UTF_8.name()) else null
+            }
+            readAny = true
+            if (b == '\n'.code) break
+            if (b != '\r'.code) {
+                sb.write(b)
+            }
+        }
+        return sb.toString(Charsets.UTF_8.name())
+    }
+
+    private fun readExactBytes(input: java.io.InputStream, length: Int): ByteArray {
+        val buf = ByteArray(length)
+        var offset = 0
+        while (offset < length) {
+            val r = input.read(buf, offset, length - offset)
+            if (r == -1) break
+            offset += r
+        }
+        return if (offset == length) buf else buf.copyOf(offset)
+    }
+
     private fun handleIpcClient(socket: Socket, serverSocket: ServerSocket) {
         try {
             socket.soTimeout = 2500
@@ -164,42 +193,36 @@ object ClipShellDaemon {
                 return
             }
 
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+            val rawInput = socket.getInputStream()
             val out = socket.getOutputStream()
 
-            val requestLine = reader.readLine() ?: return
+            val requestLine = readHeaderLine(rawInput) ?: return
             val parts = requestLine.split(" ")
             if (parts.size < 2) return
             val method = parts[0].uppercase()
             val path = parts[1]
 
             var contentLength = 0
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                if (line.isNullOrEmpty()) break
-                val lower = line!!.lowercase()
+            while (true) {
+                val line = readHeaderLine(rawInput) ?: break
+                if (line.isEmpty()) break
+                val lower = line.lowercase()
                 if (lower.startsWith("content-length:")) {
                     contentLength = lower.substring("content-length:".length).trim().toIntOrNull() ?: 0
                 }
             }
 
-            val bodyBuilder = StringBuilder()
-            if (contentLength > 0) {
-                val buf = CharArray(1024)
-                var rem = contentLength
-                while (rem > 0) {
-                    val r = reader.read(buf, 0, minOf(rem, buf.size))
-                    if (r == -1) break
-                    bodyBuilder.append(buf, 0, r)
-                    rem -= r
-                }
+            val body = if (contentLength > 0) {
+                String(readExactBytes(rawInput, contentLength), Charsets.UTF_8)
+            } else {
+                ""
             }
-            val body = bodyBuilder.toString()
 
             when {
                 path == "/ping" -> {
                     val resp = JSONObject().apply {
                         put("status", "ok")
+                        put("version", DAEMON_VERSION)
                         put("uid", android.os.Process.myUid())
                         put("pid", android.os.Process.myPid())
                     }.toString()
@@ -278,6 +301,23 @@ object ClipShellDaemon {
         }
     }
 
+    private fun extractClipDataText(clip: ClipData): String? {
+        for (i in 0 until clip.itemCount) {
+            val item = clip.getItemAt(i) ?: continue
+            val direct = item.text?.toString()
+            if (!direct.isNullOrEmpty()) return direct
+            val uriStr = item.uri?.toString()
+            if (!uriStr.isNullOrEmpty()) return uriStr
+            val coerced = try {
+                item.coerceToText(null)?.toString()
+            } catch (_: Throwable) {
+                null
+            }
+            if (!coerced.isNullOrEmpty()) return coerced
+        }
+        return null
+    }
+
     private fun readSystemClipboardInternal(): String? {
         val (invokeClass, proxy) = getClipboardProxy() ?: return null
         val methods = invokeClass.declaredMethods.filter { it.name == METHOD_GET }
@@ -287,8 +327,7 @@ object ClipShellDaemon {
                 try {
                     val res = method.invoke(proxy, *args.toTypedArray())
                     if (res is ClipData && res.itemCount > 0) {
-                        val item = res.getItemAt(0)
-                        val text = item.text?.toString() ?: item.coerceToText(null)?.toString()
+                        val text = extractClipDataText(res)
                         if (!text.isNullOrEmpty()) {
                             return text
                         }
@@ -380,18 +419,19 @@ object ClipShellDaemon {
         if (text.isEmpty()) return
         val hash = sha256(text)
         if (hash != lastKnownHash) {
-            lastKnownHash = hash
-            notifyMainAppClipChanged(text)
+            if (notifyMainAppClipChanged(text)) {
+                lastKnownHash = hash
+            }
         }
     }
 
-    private fun notifyMainAppClipChanged(text: String) {
+    private fun notifyMainAppClipChanged(text: String): Boolean {
         // 1. 优先通过本地 HTTP 直推给主进程的 LocalHttpServer (127.0.0.1:18237/local_clip)
         try {
             val url = URL("http://127.0.0.1:18237/local_clip")
             val conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = 500
-            conn.readTimeout = 500
+            conn.connectTimeout = 800
+            conn.readTimeout = 800
             conn.requestMethod = "POST"
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -401,12 +441,12 @@ object ClipShellDaemon {
             conn.outputStream.use { it.write(payload) }
             if (conn.responseCode == 200) {
                 conn.disconnect()
-                return
+                return true
             }
             conn.disconnect()
         } catch (_: Throwable) {}
 
-        // 2. 若主进程被冻结或尚未启动，发送高优先级前台广播唤醒它
+        // 2. 若主进程被冻结或尚未启动，发送高优先级前台广播唤醒它，不锁定 lastKnownHash 以便下一拍重推
         try {
             Runtime.getRuntime().exec(
                 arrayOf(
@@ -416,6 +456,7 @@ object ClipShellDaemon {
                 )
             ).waitFor()
         } catch (_: Throwable) {}
+        return false
     }
 
     private fun keepAppProcessAlive(listenerRegistered: Boolean) {

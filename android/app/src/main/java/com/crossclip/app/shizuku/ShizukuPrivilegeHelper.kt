@@ -26,7 +26,7 @@ object ShizukuPrivilegeHelper {
     private var lastDaemonPingMs = 0L
 
     /**
-     * 检查运行于 UID 2000 的独立守护进程 ClipShellDaemon 是否在线。
+     * 检查运行于 UID 2000 的独立守护进程 ClipShellDaemon 是否在线且版本匹配。
      * 带 1500ms 短缓存避免高频阻塞调用。
      */
     fun isShellDaemonAlive(forceCheck: Boolean = false): Boolean {
@@ -40,9 +40,16 @@ object ShizukuPrivilegeHelper {
             conn.connectTimeout = 250
             conn.readTimeout = 250
             conn.requestMethod = "GET"
-            val ok = conn.responseCode == 200
+            val code = conn.responseCode
+            val versionOk = if (code == 200) {
+                val respStr = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val json = JSONObject(respStr)
+                json.optInt("version", 1) >= ClipShellDaemon.DAEMON_VERSION
+            } else {
+                false
+            }
             conn.disconnect()
-            ok
+            versionOk
         } catch (_: Throwable) {
             false
         }

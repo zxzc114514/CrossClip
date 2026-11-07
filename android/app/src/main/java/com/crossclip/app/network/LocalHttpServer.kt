@@ -67,15 +67,43 @@ class LocalHttpServer(
         }
     }
 
+    private fun readAsciiLine(input: java.io.InputStream): String? {
+        val sb = java.io.ByteArrayOutputStream(128)
+        var readAny = false
+        while (true) {
+            val b = input.read()
+            if (b == -1) {
+                return if (readAny) sb.toString(Charsets.UTF_8.name()) else null
+            }
+            readAny = true
+            if (b == '\n'.code) break
+            if (b != '\r'.code) {
+                sb.write(b)
+            }
+        }
+        return sb.toString(Charsets.UTF_8.name())
+    }
+
+    private fun readExactBytes(input: java.io.InputStream, length: Int): ByteArray {
+        val buf = ByteArray(length)
+        var offset = 0
+        while (offset < length) {
+            val read = input.read(buf, offset, length - offset)
+            if (read == -1) break
+            offset += read
+        }
+        return if (offset == length) buf else buf.copyOf(offset)
+    }
+
     private fun handleClient(socket: Socket) {
         val remoteIp = socket.inetAddress?.hostAddress ?: "未知"
         try {
             socket.soTimeout = 3000
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+            val rawInput = socket.getInputStream()
             val outputStream = socket.getOutputStream()
 
             // 1. 读取请求行
-            val requestLine = reader.readLine() ?: return
+            val requestLine = readAsciiLine(rawInput) ?: return
             val parts = requestLine.split(" ")
             if (parts.size < 2) return
             val method = parts[0].uppercase()
@@ -83,28 +111,21 @@ class LocalHttpServer(
 
             // 2. 读取 Header
             var contentLength = 0
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                if (line.isNullOrEmpty()) break
-                val headerLower = line!!.lowercase()
+            while (true) {
+                val line = readAsciiLine(rawInput) ?: break
+                if (line.isEmpty()) break
+                val headerLower = line.lowercase()
                 if (headerLower.startsWith("content-length:")) {
                     contentLength = headerLower.substring("content-length:".length).trim().toIntOrNull() ?: 0
                 }
             }
 
-            // 3. 读取 Body
-            val bodyBuilder = StringBuilder()
-            if (contentLength > 0) {
-                val buffer = CharArray(1024)
-                var remaining = contentLength
-                while (remaining > 0) {
-                    val read = reader.read(buffer, 0, minOf(remaining, buffer.size))
-                    if (read == -1) break
-                    bodyBuilder.append(buffer, 0, read)
-                    remaining -= read
-                }
+            // 3. 按精确 UTF-8 字节数读取 Body，避免多字节字符下按字符数读取导致阻塞超时
+            val body = if (contentLength > 0) {
+                String(readExactBytes(rawInput, contentLength), Charsets.UTF_8)
+            } else {
+                ""
             }
-            val body = bodyBuilder.toString()
 
             // 4. 路由处理
             when {
